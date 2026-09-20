@@ -16,6 +16,22 @@ jobs:
     defaults:
       run:
         working-directory: backend
+    services:
+      postgres:
+        image: pgvector/pgvector:pg16
+        env:
+          POSTGRES_USER: medai
+          POSTGRES_PASSWORD: medai
+          POSTGRES_DB: medai_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U medai"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      DATABASE_URL: postgresql+asyncpg://medai:medai@localhost:5432/medai_test
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5

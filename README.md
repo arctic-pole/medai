@@ -21,8 +21,10 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 0 (Foundation) in progress. No AI features exist yet, by design — see
-`medai_spec.yaml` `phases.0_foundation.constraint`.
+Phase 1 (Patient Data) done on the backend: auth, patient profile, medical history, allergies,
+and current medications all have tested CRUD APIs. Mobile is not yet scaffolded (see
+`mobile/README.md`). No AI features exist yet — see `docs/KNOWN_LIMITATIONS.md` for the current,
+up-to-date status and open decisions.
 
 ## Backend — local development
 
@@ -38,7 +40,8 @@ uvicorn app.main:app --reload
 
 Health check: `GET http://localhost:8000/healthz` → `{"status": "ok"}`
 
-Run tests:
+Run tests (integration tests need a `medai_test` database on the same Postgres server —
+`CREATE DATABASE medai_test;`, created automatically in CI):
 
 ```bash
 pytest

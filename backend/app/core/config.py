@@ -15,10 +15,15 @@ class Settings(BaseSettings):
 
     database_url: str = "postgresql+asyncpg://medai:medai@localhost:5432/medai"
 
-    jwt_secret_key: str = "change-me-in-real-environments"
+    jwt_secret_key: str = "change-me-in-real-environments-min-32-bytes-long"
     jwt_algorithm: str = "HS256"
     jwt_access_token_expire_minutes: int = 15
     jwt_refresh_token_expire_days: int = 7
+
+    # Application-level field encryption key for sensitive columns (Fernet key).
+    # DEV-ONLY DEFAULT — never use this value outside local development.
+    # Generate a real one with: from cryptography.fernet import Fernet; Fernet.generate_key()
+    field_encryption_key: str = "kgcgyGwg_TOkwTOdpCClu340NKpRIVU15x2EeNDDtqg="
 
 
 settings = Settings()

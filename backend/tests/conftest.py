@@ -1,0 +1,45 @@
+import os
+
+os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://medai:medai@localhost:5432/medai_test")
+
+import pytest_asyncio
+from httpx import ASGITransport, AsyncClient
+from sqlalchemy.ext.asyncio import async_sessionmaker
+
+from app.db import models  # noqa: F401 — registers tables on Base.metadata
+from app.db.session import Base, engine, get_db
+from app.main import app
+
+
+@pytest_asyncio.fixture(scope="session", autouse=True)
+async def _schema():
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    yield
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.drop_all)
+    await engine.dispose()
+
+
+@pytest_asyncio.fixture
+async def db_session():
+    async with engine.connect() as conn:
+        trans = await conn.begin()
+        session_factory = async_sessionmaker(
+            bind=conn, expire_on_commit=False, join_transaction_mode="create_savepoint"
+        )
+        async with session_factory() as session:
+            yield session
+        await trans.rollback()
+
+
+@pytest_asyncio.fixture
+async def client(db_session):
+    async def _override_get_db():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override_get_db
+    transport = ASGITransport(app=app)
+    async with AsyncClient(transport=transport, base_url="http://test") as ac:
+        yield ac
+    app.dependency_overrides.clear()
