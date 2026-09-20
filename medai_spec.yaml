@@ -1,0 +1,812 @@
+################################################################################
+# MEDAI — MULTIMODAL AI HEALTH ASSESSMENT & CLINICAL DECISION SUPPORT SYSTEM
+# Consolidated Master Specification  (replaces prescriptionModel_implementationPlan.txt
+#                                      and plan_compressed.txt)
+################################################################################
+
+meta:
+  project: MEDAI
+  full_name: "Multimodal AI Health Assessment & Clinical Decision Support System"
+  type: clinical_decision_support_prototype
+  not_a: [autonomous_doctor, prescription_service, diagnostic_system, emergency_service]
+
+################################################################################
+# AGENT OPERATING RULES
+################################################################################
+
+agent_rules:
+  change_control:
+    - "Treat this file as the authoritative spec. Never change architecture without explicit user authorisation."
+    - "Authorisation phrase: CHANGE SPECIFICATION"
+    - "If two requirements conflict: STOP, report the conflict, ask user — never choose silently."
+    - "If an external service/API has changed: report incompatibility, do not redesign automatically."
+    - "If a requirement cannot be implemented: STOP and report the blocker."
+  behaviour:
+    - "Never fabricate: measurements, medical evidence, medication properties, contraindications, doses, device capabilities, citations, test results, API existence."
+    - "Never silently assume missing patient information or convert uncertainty to certainty."
+    - "Never override deterministic safety rules or bypass validation."
+    - "Never train a foundation model from scratch."
+    - "Never introduce unnecessary microservices or optimise prematurely."
+    - "Never rewrite working components unless required by this spec."
+    - "Every implementation change must map to a requirement in this document."
+    - "Preserve existing functionality when implementing later phases."
+  task_loop:
+    steps:
+      1: "Identify the exact requirement."
+      2: "Identify and verify dependencies."
+      3: "Implement only that requirement."
+      4: "Run relevant tests."
+      5: "Inspect and fix only related failures."
+      6: "Update documentation."
+      7: "Report result then STOP."
+    report_format: "TASK / PHASE / CHANGES / TESTS / RESULT: PASS|FAIL|BLOCKED / LIMITATIONS / NEXT"
+  priority_order:
+    P0: [safety, data_integrity, patient_state, core_functionality]
+    P1: [RAG, clinical_reasoning, vitals, voice]
+    P2: [UX_improvements, analytics, additional_devices, performance]
+    P3: [advanced_features]
+  rule: "Never work on P2/P3 while any P0 requirement is broken."
+
+################################################################################
+# SYSTEM ARCHITECTURE
+################################################################################
+
+architecture:
+  stack:
+    mobile: "Flutter (React Native only if explicitly authorised)"
+    backend: "Python + FastAPI"
+    database: PostgreSQL
+    ai_providers: "Provider abstraction — LLM, STT, TTS, embeddings, vector DB, medical knowledge"
+    health_data: "Device/platform abstraction layer"
+
+  provider_interfaces:
+    - LLMProvider          # methods: generate(), structured_generate(), stream()
+    - SpeechToTextProvider
+    - TextToSpeechProvider
+    - EmbeddingProvider
+    - VectorStore
+    - MedicalKnowledgeProvider
+    - DeviceAdapter
+
+  separation_of_concerns:
+    - user_interface
+    - data_ingestion
+    - patient_state
+    - clinical_knowledge
+    - deterministic_safety
+    - ai_reasoning
+    - validation
+    - output_generation
+
+  canonical_pipeline: >
+    USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
+    → VITAL/HEALTH_DATA → EVIDENCE_RETRIEVAL → CLINICAL_REASONING
+    → DETERMINISTIC_SAFETY → MEDICATION_SAFETY → OUTPUT_VALIDATION
+    → TEXT_RESPONSE → OPTIONAL_TTS
+
+  bypass_forbidden: [patient_state, safety_engine, output_validator]
+
+################################################################################
+# DATABASE
+################################################################################
+
+database:
+  engine: PostgreSQL
+  tables:
+    - users
+    - patients
+    - patient_profiles
+    - medical_history
+    - allergies
+    - current_medications
+    - symptoms
+    - conversations
+    - messages
+    - vitals
+    - devices
+    - measurements
+    - clinical_sources
+    - knowledge_chunks
+    - recommendations
+    - recommendation_evidence
+    - safety_events
+    - audit_logs
+
+################################################################################
+# PATIENT PROFILE
+################################################################################
+
+patient_profile:
+  required_fields:
+    - patient_uuid
+    - age
+    - sex
+    - height_cm
+    - weight_kg
+    - known_conditions
+    - allergies
+    - current_medications
+    - relevant_history
+    - emergency_contact
+    - consent_status
+  rule: "Do not collect fields not required by a feature."
+
+################################################################################
+# STRUCTURED PATIENT STATE
+################################################################################
+
+patient_state:
+  schema:
+    patient: {id: UUID, age: null, sex: null, height_cm: null, weight_kg: null}
+    symptoms: []
+    medical_history: []
+    allergies: []
+    medications: []
+    vitals: {}
+    recent_events: []
+    risk_factors: []
+    unknowns: []
+    conversation_context: {}
+    data_quality: {}
+  missing_value_states: [known, unknown, not_provided, uncertain, stale]
+  rules:
+    - "LLM must NOT reason directly from unstructured conversation alone."
+    - "Never convert missing information into an assumed value."
+    - "Never represent model inference as measured data."
+  data_source_distinction: [user_reported, device_measured, database_derived, model_inferred, clinician_entered]
+
+################################################################################
+# SYMPTOM EXTRACTION
+################################################################################
+
+symptom_extraction:
+  fields:
+    - symptom
+    - onset
+    - duration
+    - severity      # 0–10
+    - frequency
+    - location
+    - progression
+    - triggers
+    - relieving_factors
+    - associated_symptoms
+    - certainty      # user_reported | measured | inferred | external
+  rule: "Never invent missing values."
+  example:
+    symptom: headache
+    severity: 6
+    duration: "8 hours"
+    onset: sudden
+    location: frontal
+    progression: persistent
+    certainty: user_reported
+
+################################################################################
+# CONVERSATION MANAGER
+################################################################################
+
+conversation_manager:
+  flow:
+    1: receive_user_input
+    2: update_patient_state
+    3: identify_missing_clinically_relevant_information
+    4: check_if_missing_info_changes_next_action
+    5: ask_highest_priority_question
+    6: repeat
+  question_priority:
+    1: emergency_indicators
+    2: high_impact_missing_information
+    3: medication_allergy_safety
+    4: relevant_history
+    5: required_measurements
+    6: lower_priority_context
+  pre_question_checks:
+    - already_in_patient_state
+    - available_from_authorised_health_source
+    - safely_obtainable_from_validated_measurement
+    - actually_necessary
+  rules:
+    - "Do not ask unnecessary or duplicate questions."
+    - "Do not ask for information already known or stored."
+  permitted_actions:
+    - ASK_QUESTION
+    - GET_VITAL
+    - RETRIEVE_HISTORY
+    - RETRIEVE_EVIDENCE
+    - RUN_ASSESSMENT
+    - ESCALATE
+    - RESPOND
+  rule: "LLM may propose an action; application determines whether it is permitted."
+
+################################################################################
+# VOICE PIPELINE
+################################################################################
+
+voice_pipeline:
+  flow: "MICROPHONE → VAD → STT → CONVERSATION_MANAGER → AI → VALIDATED_TEXT → TTS → SPEAKER"
+  rules:
+    - "TTS must never receive unvalidated medical output."
+    - "User must be able to interrupt TTS and continue speaking."
+    - "Use streaming where supported; no medical content spoken until safety validation is complete."
+    - "STT and TTS must be provider-agnostic."
+    - "Do not implement unsupported always-listening behaviour."
+
+################################################################################
+# VITAL INGESTION & DEVICE ABSTRACTION
+################################################################################
+
+vital_system:
+  device_pipeline: "DEVICE → DEVICE_ADAPTER → NORMALISED_MEASUREMENT → VITAL_SERVICE → PATIENT_STATE"
+  canonical_measurement:
+    measurement_id: UUID
+    patient_id: UUID
+    type: heart_rate       # example
+    value: 82
+    unit: bpm
+    timestamp: ISO8601
+    source: device_or_health_platform
+    device_id: string
+    quality: good          # good | acceptable | poor
+    confidence: null
+  initial_measurements:
+    - heart_rate
+    - oxygen_saturation
+    - blood_pressure
+    - body_temperature
+    - respiratory_rate
+    - weight
+  later_additions: [ECG, HRV, sleep, activity, glucose]
+  validation_stages:
+    1: format
+    2: unit
+    3: timestamp
+    4: missing_values
+    5: physiological_plausibility
+    6: device_signal_quality
+    7: repeat_measurement_if_required
+  on_suspicious_measurement:
+    return: MEASUREMENT_UNRELIABLE
+    action: request_another_measurement
+  rules:
+    - "Do not manufacture hardware."
+    - "Clinical engine must not depend on a specific wearable."
+    - "Never fabricate a measurement."
+    - "Initial dev may use simulated/manual measurements before real device integrations."
+    - "If device fails: return {status: unavailable, reason: DEVICE_ERROR}; conversation manager may ask user to provide manually."
+  automatic_retrieval_preference: "DEVICE → HEALTH_PLATFORM → MEDAI (not USER → types manually → MEDAI)"
+
+################################################################################
+# MEDICAL KNOWLEDGE BASE & RAG PIPELINE
+################################################################################
+
+knowledge_base:
+  approved_sources:
+    - government_health_guidance
+    - recognised_clinical_guidelines
+    - official_drug_labels
+    - peer_reviewed_literature
+    - authoritative_medical_organisations
+    - validated_medication_information
+  source_metadata:
+    - title
+    - publisher
+    - url_or_reference
+    - publication_date
+    - update_date
+    - source_type
+    - version
+  versioning: "Never overwrite knowledge without tracking versions; store source/version/publication_date/retrieval_date/effective_date/superseded_status."
+
+rag_pipeline:
+  flow: "SOURCE_INGESTION → CLEANING → METADATA → CHUNKING → EMBEDDINGS → VECTOR_DB → RETRIEVAL → RERANKING → EVIDENCE_PACKAGE"
+  retrieval_scope: [symptoms, patient_context, medications, vitals, identified_risks]
+  rule: "LLM must not receive arbitrary unrelated documents."
+
+evidence_package:
+  schema:
+    patient_state: {}
+    relevant_vitals: []
+    relevant_history: []
+    retrieved_evidence: []
+    known_unknowns: []
+    safety_flags: []
+  rule: "Clinical reasoner must receive this package; every medical claim must be traceable to an approved source or explicitly marked uncertain."
+
+################################################################################
+# CLINICAL REASONER
+################################################################################
+
+clinical_reasoner:
+  receives: evidence_package
+  may:
+    - synthesise_symptoms
+    - consider_possible_explanations
+    - interpret_relevant_measurements
+    - identify_missing_information
+    - generate_candidate_management_options
+    - explain_uncertainty
+  must_not:
+    - invent_evidence_or_medication_info
+    - invent_contraindications_or_doses
+    - invent_vital_readings
+    - claim_certainty_without_evidence
+    - override_safety_rules
+    - bypass_validator
+    - convert_uncertain_info_to_certainty
+  prompting:
+    receives: [system_policy, task, patient_state, evidence, safety_flags, output_schema]
+    must_not_receive: uncontrolled_application_state
+    rule: "Use structured output wherever supported."
+
+################################################################################
+# DETERMINISTIC SAFETY ENGINE
+################################################################################
+
+safety_engine:
+  mandatory: true
+  runs_independently_of_llm: true
+  inputs: [ai_output, patient_state, vitals, medication_data, safety_rules]
+  outputs: [PASS, MODIFY, BLOCK, ESCALATE]
+  rule: "Hard safety rules take precedence over LLM output; LLM cannot override them."
+  on_failure: "Fail closed — do not release patient-specific treatment guidance."
+  emergency_triage:
+    runs_before: normal_treatment_reasoning
+    rule_schema:
+      rule_id: EMERGENCY_001
+      condition: string
+      severity: critical
+      action: ESCALATE
+      source: string
+      version: string
+    rule: "Do not hard-code arbitrary medical thresholds without an authoritative source."
+
+################################################################################
+# MEDICATION SAFETY ENGINE
+################################################################################
+
+medication_safety:
+  separate_from_llm_reasoning: true
+  checks:
+    - allergies
+    - drug_drug_interactions
+    - drug_disease_interactions
+    - age_related_restrictions
+    - contraindications
+    - duplicate_therapy
+    - dosage_validity
+    - source_version_validity
+  pipeline: "CANDIDATE_MEDICATION → MEDICATION_DB → ALLERGY_CHECK → CURRENT_MED_CHECK → CONDITION_CHECK → CONTRAINDICATION_CHECK → INTERACTION_CHECK → VALIDATOR → ALLOWED|BLOCKED|REQUIRES_REVIEW"
+  rule: "System must not bypass this pipeline."
+
+################################################################################
+# OUTPUT VALIDATOR
+################################################################################
+
+output_validator:
+  checks:
+    1: schema_compliance
+    2: unsupported_claims
+    3: evidence_availability
+    4: dangerous_language
+    5: prescription_like_directives
+    6: contradictions
+    7: safety_engine_result
+    8: medication_validation
+    9: uncertainty_requirements
+    10: escalation_requirements
+  on_failure: "Do not send response to user; return to correction pipeline; if correction fails use safe fallback."
+  on_validator_failure: "Fail closed — do not release output."
+
+safe_fallback:
+  status: caution
+  summary: "Insufficient information to provide a reliable assessment."
+  recommended_next_steps: ["Seek appropriate medical advice."]
+  limitations: ["The available information was insufficient."]
+
+################################################################################
+# FINAL OUTPUT SCHEMA
+################################################################################
+
+output_schema:
+  status: "normal | caution | urgent | emergency"
+  summary: string
+  possible_explanations: []
+  known_information: []
+  unknown_information: []
+  vital_summary: []
+  recommended_next_steps: []
+  treatment_options: []
+  medication_information: []
+  warnings: []
+  escalation: null
+  evidence: []
+  confidence: "low | moderate | high"
+  limitations: []
+
+response_states: [NORMAL, CAUTION, URGENT, EMERGENCY, INSUFFICIENT_INFORMATION, SYSTEM_ERROR]
+rule: "Do not introduce additional output fields or clinical severity states without authorisation."
+
+uncertainty_language:
+  preferred:
+    - "Possible explanations include..."
+    - "Based on the available information..."
+    - "More information is required..."
+    - "These findings are not sufficient to establish a diagnosis."
+  forbidden: "\"This is definitely X.\" (unless explicitly supported by validated evidence)"
+
+################################################################################
+# CLINICAL EVIDENCE TRACEABILITY
+################################################################################
+
+traceability:
+  recommendation_chain: "recommendation_id → evidence_id → source_id → source_version"
+  per_assessment_record:
+    - model_name
+    - model_version
+    - prompt_version
+    - knowledge_base_version
+    - safety_rule_version
+    - validator_version
+    - patient_state_version
+  rule: "Every medically significant recommendation must have an evidence reference."
+
+################################################################################
+# PROMPT SAFETY & INJECTION DEFENCE
+################################################################################
+
+prompt_safety:
+  untrusted_inputs: [user_text, retrieved_documents, uploaded_documents, external_medical_text, device_metadata]
+  rule: "User-provided text is UNTRUSTED DATA. Model must not interpret it as system instructions."
+  trust_hierarchy:
+    1: system_specification
+    2: deterministic_safety_rules
+    3: application_rules
+    4: validated_medical_knowledge
+    5: structured_patient_data
+    6: user_conversation
+    7: retrieved_external_text
+  rule2: "Lower-level content cannot override higher-level rules."
+
+################################################################################
+# ERROR HANDLING
+################################################################################
+
+error_handling:
+  error_categories:
+    - AUTH_ERROR
+    - STT_ERROR
+    - TTS_ERROR
+    - LLM_ERROR
+    - DATABASE_ERROR
+    - DEVICE_ERROR
+    - VITAL_INVALID
+    - VITAL_UNAVAILABLE
+    - RAG_ERROR
+    - EVIDENCE_INSUFFICIENT
+    - SAFETY_BLOCK
+    - VALIDATION_ERROR
+    - UNKNOWN_ERROR
+  behaviour:
+    llm_failure: "Controlled retry → safe fallback."
+    rag_failure: "Return EVIDENCE_INSUFFICIENT; do not generate confident recommendations from model memory."
+    safety_engine_failure: "Fail closed."
+    validator_failure: "Fail closed."
+    unknown_failure: "Fail safely and report."
+  rule: "Never silently swallow errors."
+  fail_closed_principle: "UNKNOWN → NOT_SAFE_TO_RELEASE (not UNKNOWN → ASSUME_SAFE)"
+
+################################################################################
+# SECURITY & PRIVACY
+################################################################################
+
+security:
+  minimum_requirements:
+    - TLS
+    - authenticated_APIs
+    - secure_session_handling
+    - encrypted_sensitive_data
+    - access_control
+    - audit_logs
+    - UUID_identifiers
+    - minimal_data_collection
+    - secrets_outside_source_code
+    - environment_variables_for_credentials
+  logging:
+    allowed: [request_id, user_uuid, timestamp, module, latency, error_code]
+    avoid: [raw_symptoms, full_conversations, medical_history, medication_history, raw_health_records]
+    exception: "Unless required by a secure audit mechanism."
+  never_commit: [API_keys, passwords, database_credentials, tokens, private_certificates, production_secrets]
+  consent_record_fields: [user, consent_type, timestamp, version, status]
+
+################################################################################
+# UI / UX
+################################################################################
+
+ux:
+  paradigm: "CHAT + VOICE (not FORM + DASHBOARD)"
+  voice_first: true
+  primary_action: "Talk to Health AI"
+  user_must_not_be_required_to:
+    - type_symptoms
+    - categorise_symptoms
+    - manually_enter_known_history_allergies_medications
+    - copy_vitals_from_another_app
+    - manually_construct_a_report
+    - manually_save_a_consultation
+  manual_interaction_permitted_for:
+    - consent
+    - authentication
+    - physical_measurements_without_device_integration
+    - confirmation_of_ambiguous_critical_information
+  user_must_never_see:
+    - embeddings
+    - vector_databases
+    - RAG
+    - internal_JSON
+    - model_prompts
+    - token_counts
+    - internal_safety_rule_details
+  interruptible_tts: true
+  session_auto_preserved: true
+  resume_previous_consultation: true
+  automatic_profile_memory: true
+  confirmation_required_when:
+    - critical_medical_fact_is_ambiguous
+    - medication_or_allergy_uncertain
+    - measurement_appears_incorrect
+    - high_risk_recommendation_considered
+    - consent_sensitive_action_required
+
+  screens:
+    - onboarding
+    - consent
+    - home
+    - voice_consultation
+    - conversation
+    - measurements
+    - patient_profile
+    - medical_history
+    - medications
+    - allergies
+    - assessment_result
+    - evidence
+    - safety_warnings
+    - measurement_history
+    - settings
+
+  accessibility:
+    - voice_interaction
+    - large_readable_text
+    - scalable_text
+    - screen_reader_compatible
+    - high_contrast
+    - clear_buttons
+    - captions_transcripts
+    - visual_feedback
+    - haptic_feedback
+    - optional_TTS
+    - TTS_interruptible
+    - text_always_available
+
+  action_categories:
+    automatic: [retrieve_existing_vitals, retrieve_patient_history, retrieve_evidence, update_conversation_state]
+    user_interaction_required: [microphone_activation, physical_measurement, explicit_consent, device_pairing]
+    restricted: [medical_treatment_actions, medication_actions, external_clinical_communication]
+
+  absolute_rule: "INTERNAL COMPLEXITY MUST NEVER BECOME USER COMPLEXITY."
+
+################################################################################
+# PROHIBITED SHORTCUTS
+################################################################################
+
+prohibited:
+  - hard_coded_AI_answers
+  - fake_device_readings
+  - fake_clinical_evidence
+  - fabricated_citations
+  - hard_coded_invented_drug_dosages
+  - random_medical_thresholds
+  - LLM_bypassing_safety
+  - using_conversation_text_as_DB_truth_without_extraction
+  - silently_ignoring_errors
+  - claiming_medical_validation_not_performed
+  - claiming_regulatory_approval
+  - claiming_clinical_efficacy
+  - claiming_system_is_safe_for_real_world_diagnosis
+
+system_disclaimers:
+  - "Prototype must never represent itself as a licensed doctor."
+  - "Prototype must never claim its output is a medical diagnosis or prescription."
+
+################################################################################
+# DEVELOPMENT PHASES
+################################################################################
+
+phases:
+  order: strict
+  0_foundation:
+    deliverables: [repository, README, architecture_docs, env_config, backend_skeleton, frontend_skeleton, DB_connection, CI_test_framework]
+    constraint: "No AI features."
+  1_patient_data:
+    deliverables: [auth, patient_profile, history, allergies, medications, DB_models, CRUD_APIs, validation]
+    pass: "Patient data can be created, read, updated, and securely stored."
+  2_conversation:
+    deliverables: [microphone, STT, conversation_UI, conversation_API, message_storage]
+    pass: "User can speak and receive a text response."
+    constraint: "No medical reasoning yet."
+  3_patient_state:
+    deliverables: [symptom_extraction, structured_JSON_state, state_updates, unknown_fields, confidence_uncertainty]
+    pass: "A conversation can be transformed into the canonical patient state."
+  4_conversation_manager:
+    deliverables: [missing_info_detection, follow_up_questions, question_prioritisation, state_updates]
+    pass: "AI can conduct a structured symptom interview."
+  5_medical_knowledge:
+    deliverables: [source_ingestion, metadata, chunking, embeddings, vector_DB, retrieval]
+    pass: "Given a clinical topic, relevant evidence can be retrieved and traced to its source."
+  6_clinical_reasoning:
+    deliverables: [evidence_package, structured_reasoning, differential_possibilities, management_options, uncertainty]
+    pass: "Model produces schema-valid reasoning grounded in retrieved evidence."
+  7_safety_engine:
+    deliverables: [emergency_rules, vital_validation, medication_safety, contraindications, escalation_logic]
+    pass: "Safety rules can block unsafe model output."
+  8_output_validator:
+    deliverables: [schema_validation, evidence_validation, safety_validation, unsupported_claim_detection, fallback_response]
+    pass: "No final clinical response reaches the user without validation."
+  9_vital_ingestion:
+    deliverables: [vital_API, device_abstraction, measurement_schema, quality_validation, measurement_history]
+    note: "Initial data sources may be simulated/manual."
+    pass: "Vitals can enter the canonical patient state."
+  10_health_platform_integration:
+    deliverables: [health_platform_adapters]
+    rule: "Do not make clinical engine device-specific."
+  11_TTS:
+    deliverables: [validated_text_to_TTS_to_audio]
+    rule: "Never send unvalidated model output directly to TTS."
+  12_complete_pipeline:
+    deliverables: [full_end_to_end_integration]
+    pass: "Complete end-to-end demonstration works."
+  13_security_hardening:
+    deliverables: [secrets_management, access_control, encryption, audit_logs, privacy_controls, input_sanitisation, prompt_injection_protection]
+  14_evaluation:
+    deliverables: [unit_tests, integration_tests, e2e_tests, safety_tests, adversarial_tests, benchmark_dataset, recorded_results]
+  ux_validation: "Must occur alongside every phase — each feature must answer: 'Can the user accomplish this through the simplest possible voice-first interaction?'"
+
+################################################################################
+# TESTING STRATEGY
+################################################################################
+
+testing:
+  unit:
+    - symptom_extraction
+    - state_updates
+    - vital_validation
+    - safety_rules
+    - medication_checks
+    - schema_validation
+    - retrieval
+    - output_validation
+  integration:
+    - STT→extraction
+    - extraction→state
+    - state→RAG
+    - RAG→reasoner
+    - reasoner→safety
+    - safety→validator
+  end_to_end: "Complete user conversations from USER_SPEAKS to FINAL_VALIDATED_RESPONSE."
+  safety_adversarial:
+    - emergency_symptoms
+    - missing_data
+    - contradictory_data
+    - invalid_vitals
+    - medication_conflicts
+    - allergies
+    - hallucination_attempts
+    - prompt_injection
+    - malformed_AI_output
+    - insufficient_evidence
+  hallucination_tests: "Cases where correct answer is UNKNOWN / INSUFFICIENT_INFORMATION / SEEK_PROFESSIONAL_EVALUATION."
+
+evaluation_dataset:
+  schema:
+    case_id: string
+    patient_profile: {}
+    symptoms: []
+    history: []
+    medications: []
+    allergies: []
+    vitals: {}
+    expected_safety_state: string
+    expected_information_requirements: []
+    reference_sources: []
+  case_types: [normal, ambiguous, incomplete, contradictory, emergency, medication_conflict, insufficient_information]
+  rule: "Do not create expected answers from model guesses; use validated reference material."
+
+evaluation_metrics:
+  extraction: [symptom_accuracy, duration_accuracy, severity_accuracy]
+  retrieval: [relevant_doc_recall, evidence_relevance]
+  safety: [emergency_detection_sensitivity, unsafe_recommendation_rate, contraindication_detection]
+  generation: [evidence_grounded_response_rate, unsupported_claim_rate, schema_compliance]
+  system: [latency, STT_latency, reasoning_latency, total_response_latency, failure_rate]
+  rule: "Safety metrics are mandatory. Do not optimise only for response quality."
+
+################################################################################
+# API STRUCTURE
+################################################################################
+
+api_endpoints:
+  groups: [/auth, /patient, /profile, /history, /allergies, /medications, /conversations, /messages, /symptoms, /vitals, /devices, /assessment, /evidence, /safety, /audit]
+  every_endpoint_requires: [request_schema, response_schema, authentication, validation, error_responses]
+
+################################################################################
+# DOCUMENTATION & DIAGRAMS
+################################################################################
+
+documentation:
+  required_files:
+    - README.md
+    - ARCHITECTURE.md
+    - API.md
+    - DATABASE.md
+    - AI_PIPELINE.md
+    - SAFETY.md
+    - SECURITY.md
+    - TESTING.md
+    - DEPLOYMENT.md
+    - KNOWN_LIMITATIONS.md
+  required_diagrams:
+    - complete_system_architecture
+    - voice_pipeline
+    - patient_state_pipeline
+    - RAG_pipeline
+    - vital_pipeline
+    - safety_pipeline
+    - medication_pipeline
+    - database_architecture
+    - deployment_architecture
+
+################################################################################
+# GIT WORKFLOW
+################################################################################
+
+git:
+  branches: [main, develop, "feature/*"]
+  commit_prefixes: [feat, fix, test, docs, refactor, chore]
+  feature_requirements: [maps_to_requirement, implemented, tested, documented, committed]
+  rule: "Never place known broken code on main."
+
+################################################################################
+# COMPLETION CRITERIA
+################################################################################
+
+completion_criteria:
+  required:
+    - mobile_application
+    - voice_interaction
+    - STT
+    - patient_profile
+    - patient_history
+    - structured_patient_state
+    - conversation_manager
+    - medical_knowledge_base
+    - RAG
+    - clinical_reasoning
+    - deterministic_safety_engine
+    - medication_safety
+    - vital_ingestion
+    - device_abstraction
+    - output_validation
+    - TTS
+    - security_controls
+    - audit_logging
+    - unit_tests
+    - integration_tests
+    - e2e_tests
+    - safety_tests
+    - evaluation_benchmark
+    - documentation
+    - architecture_diagrams
+    - known_limitations_documented
+  final_ux_contract: "OPEN_APP → SPEAK → ANSWER_ONLY_NECESSARY_QUESTIONS → AUTO_HEALTH_DATA_RETRIEVAL → MEASURE_ONLY_WHEN_NECESSARY → AI_ASSESSMENT → SAFETY_VALIDATION → TEXT_RESPONSE → OPTIONAL_VOICE_RESPONSE"
+
+# END OF SPECIFICATION
