@@ -26,6 +26,10 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSRequiresIPhoneOS</key>
 	<true/>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>MEDAI uses the microphone so you can talk to it instead of typing.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>MEDAI transcribes your speech on-device to understand what you say.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationSupportsMultipleScenes</key>

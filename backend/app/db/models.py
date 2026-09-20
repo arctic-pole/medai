@@ -133,6 +133,41 @@ class Consent(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Conversation(Base):
+    """Phase 2: raw conversation container. No medical reasoning happens against these rows —
+    see phases.2_conversation.constraint. Structured extraction into patient_state is Phase 3."""
+
+    __tablename__ = "conversations"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    messages: Mapped[list["Message"]] = relationship(back_populates="conversation", order_by="Message.created_at")
+
+
+class Message(Base):
+    """content is encrypted at rest like Phase 1's sensitive fields — a conversation transcript
+    can carry the same kind of sensitive information as medical_history/allergies. Untrusted
+    per prompt_safety.untrusted_inputs; never reasoned over directly (see conversation.rule in
+    app/conversation/stub_reply.py's docstring)."""
+
+    __tablename__ = "messages"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    conversation_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=False
+    )
+    role: Mapped[str] = mapped_column(String, nullable=False)  # user | assistant
+    content: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
 class AuditLog(Base):
     """Only fields in security.logging.allowed are ever written here — see app/audit/middleware.py."""
 

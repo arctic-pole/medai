@@ -3,6 +3,20 @@
 Base URL (local dev): `http://localhost:8000`. All endpoints (except `/healthz`, `/auth/*`)
 require `Authorization: Bearer <access_token>`.
 
+## Phase 2 endpoints (conversation)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/conversations` | bearer | Create a new conversation for the current patient |
+| GET | `/conversations` | bearer | List the current patient's conversations |
+| GET | `/conversations/{id}` | bearer | Get one conversation (404 if not owned by caller) |
+| POST | `/messages` | bearer | `{conversation_id, content}` → stores the user message, returns `{user_message, assistant_message}` |
+| GET | `/messages?conversation_id=` | bearer | List messages in a conversation (404 if not owned by caller) |
+
+The assistant reply is a **Phase 2 scaffold only** (`app/conversation/stub_reply.py` — echoes the
+user's text back with a placeholder note). No medical reasoning happens yet, per
+`phases.2_conversation.constraint`; that starts in Phase 3+.
+
 ## Phase 1 endpoints
 
 | Method | Path | Auth | Description |
@@ -35,6 +49,5 @@ Interactive schema: `GET /docs` (Swagger UI) or `GET /openapi.json` when the ser
 
 ## Not yet implemented
 
-`/conversations`, `/messages`, `/symptoms`, `/vitals`, `/devices`, `/assessment`, `/evidence`,
-`/safety`, `/audit` (read API) from `api_endpoints.groups` land in later phases per
-`IMPLEMENTATION_PLAN.md`.
+`/symptoms`, `/vitals`, `/devices`, `/assessment`, `/evidence`, `/safety`, `/audit` (read API)
+from `api_endpoints.groups` land in later phases per `IMPLEMENTATION_PLAN.md`.

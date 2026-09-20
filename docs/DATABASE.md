@@ -15,6 +15,8 @@ PostgreSQL only (+ pgvector extension for embeddings, added in Phase 5). Access 
 | `current_medications` | Current medication records | `name`/`dosage`/`frequency` encrypted at rest |
 | `consents` | Append-only consent event log | **Not** an explicit table in `medai_spec.yaml database.tables` — added to satisfy `security.consent_record_fields` (user, consent_type, timestamp, version, status), which names required fields but no table. Flagged in `IMPLEMENTATION_PLAN.md`. |
 | `audit_logs` | One row per HTTP request | Only `security.logging.allowed` fields are ever written (see `app/audit/middleware.py`) |
+| `conversations` | Phase 2: one row per conversation | Belongs to a patient |
+| `messages` | Phase 2: one row per turn (`role` = user/assistant) | `content` encrypted at rest, same as Phase 1's sensitive columns |
 
 `known_conditions`, `allergies`, `current_medications`, and `relevant_history` from
 `patient_profile.required_fields` are assembled into the logical "profile" at the API layer from

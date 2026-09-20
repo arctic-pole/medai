@@ -21,10 +21,11 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 1 (Patient Data) done on the backend: auth, patient profile, medical history, allergies,
-and current medications all have tested CRUD APIs. Mobile is not yet scaffolded (see
-`mobile/README.md`). No AI features exist yet — see `docs/KNOWN_LIMITATIONS.md` for the current,
-up-to-date status and open decisions.
+Phase 2 (Conversation) done: users can speak (or type) to the mobile app and get a text
+response, round-tripping through real `/conversations` and `/messages` APIs — no medical
+reasoning yet, by design (`phases.2_conversation.constraint`). Phase 1 (Patient Data) and
+Phase 0 (Foundation) are also done. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date
+status and open decisions, and `mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 

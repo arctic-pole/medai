@@ -29,5 +29,10 @@ and `medai_spec.yaml` `system_disclaimers`.
 ## Deferred to Phase 13
 
 Formal secret-scanning in CI, infra-level encryption/TLS enforcement, granular RBAC (currently
-single role: "the authenticated user, for their own data"), data export/delete flow, and the
-prompt-injection-specific adversarial test suite (Phase 14 builds on this).
+single role: "the authenticated user, for their own data"), data export/delete flow, the
+prompt-injection-specific adversarial test suite (Phase 14 builds on this), and locking down the
+dev-only permissive CORS policy (`app/main.py`, `allow_origins=["*"]`, active only when
+`ENVIRONMENT=development`) added in Phase 2 so the Flutter web client can reach the API locally.
+
+Phase 2 also extended `EncryptedString` (Phase 1) to `messages.content` — conversation
+transcripts can carry the same sensitivity as medical history/allergies.
