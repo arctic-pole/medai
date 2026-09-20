@@ -25,5 +25,11 @@ class Settings(BaseSettings):
     # Generate a real one with: from cryptography.fernet import Fernet; Fernet.generate_key()
     field_encryption_key: str = "kgcgyGwg_TOkwTOdpCClu340NKpRIVU15x2EeNDDtqg="
 
+    # LLMProvider (architecture.provider_interfaces) — concrete choice: OpenAI. Empty key means
+    # "not configured"; app/providers/llm/openai_provider.py fails closed (LLMNotConfiguredError)
+    # rather than fabricating a response. See docs/KNOWN_LIMITATIONS.md.
+    openai_api_key: str = ""
+    openai_model: str = "gpt-4o-mini"
+
 
 settings = Settings()

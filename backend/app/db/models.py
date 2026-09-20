@@ -133,6 +133,34 @@ class Consent(Base):
     timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
+class Symptom(Base):
+    """Phase 3: symptom_extraction.fields, populated by app/patient_state/extraction.py from a
+    conversation's user messages. All free-text fields encrypted at rest like Phase 1/2's
+    sensitive columns. associated_symptoms is stored as free text (LLM-written, comma-separated)
+    rather than a structured list — consistent with how the other descriptive fields (triggers,
+    relieving_factors) are natural-language text, not enums."""
+
+    __tablename__ = "symptoms"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("conversations.id"), nullable=True
+    )
+    symptom: Mapped[str] = mapped_column(EncryptedString, nullable=False)
+    onset: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    duration: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    severity: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    frequency: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    location: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    progression: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    triggers: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    relieving_factors: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    associated_symptoms: Mapped[str | None] = mapped_column(EncryptedString, nullable=True)
+    certainty: Mapped[str] = mapped_column(String, default="user_reported", nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class Conversation(Base):
     """Phase 2: raw conversation container. No medical reasoning happens against these rows —
     see phases.2_conversation.constraint. Structured extraction into patient_state is Phase 3."""

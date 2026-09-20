@@ -1,10 +1,10 @@
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import get_current_patient
+from app.api.deps import get_current_patient, get_owned_conversation
 from app.db.models import Conversation, Patient
 from app.db.session import get_db
 from app.schemas.conversation import ConversationResponse
@@ -39,7 +39,4 @@ async def get_conversation(
     patient: Patient = Depends(get_current_patient),
     db: AsyncSession = Depends(get_db),
 ) -> Conversation:
-    conversation = await db.get(Conversation, conversation_id)
-    if conversation is None or conversation.patient_id != patient.id:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conversation not found")
-    return conversation
+    return await get_owned_conversation(db, patient, conversation_id)

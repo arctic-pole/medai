@@ -17,6 +17,13 @@ PostgreSQL only (+ pgvector extension for embeddings, added in Phase 5). Access 
 | `audit_logs` | One row per HTTP request | Only `security.logging.allowed` fields are ever written (see `app/audit/middleware.py`) |
 | `conversations` | Phase 2: one row per conversation | Belongs to a patient |
 | `messages` | Phase 2: one row per turn (`role` = user/assistant) | `content` encrypted at rest, same as Phase 1's sensitive columns |
+| `symptoms` | Phase 3: one row per LLM-extracted symptom | `symptom_extraction.fields`; free-text fields encrypted at rest; linked to the source `conversation_id` |
+
+The canonical `patient_state.schema` (patient + symptoms + medical_history + allergies +
+medications + vitals + unknowns + data_quality, etc.) is **not** stored as a single blob — it's
+assembled on demand by `app/patient_state/assembler.py` from the tables above (`vitals` stays
+`{}` until Phase 9; `recent_events`/`risk_factors` stay `[]` until Phase 4/6, since computing them
+is clinical inference out of scope for this assembly step).
 
 `known_conditions`, `allergies`, `current_medications`, and `relevant_history` from
 `patient_profile.required_fields` are assembled into the logical "profile" at the API layer from

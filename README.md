@@ -21,11 +21,14 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 2 (Conversation) done: users can speak (or type) to the mobile app and get a text
-response, round-tripping through real `/conversations` and `/messages` APIs — no medical
-reasoning yet, by design (`phases.2_conversation.constraint`). Phase 1 (Patient Data) and
-Phase 0 (Foundation) are also done. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date
-status and open decisions, and `mobile/README.md` for mobile-specific gaps.
+Phase 3 (Patient State — symptom extraction) done on the backend: `POST /symptoms/extract` runs
+an LLM (OpenAI, via the `LLMProvider` abstraction) over a conversation and stores structured
+symptoms; `app/patient_state/assembler.py` assembles the canonical patient state from the DB on
+demand. **No `OPENAI_API_KEY` is configured yet** — the endpoint fails closed with a clear error
+rather than fabricating a response (verified live); extraction logic itself is fully tested
+against a fake provider. Phases 0–2 (Foundation, Patient Data, Conversation) are also done. See
+`docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open decisions, and
+`mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 
@@ -34,7 +37,8 @@ cd backend
 python -m venv .venv
 .venv\Scripts\activate        # Windows
 pip install -e ".[dev]"
-cp ../.env.example ../.env    # then edit values
+cp ../.env.example ../.env    # then edit values, incl. OPENAI_API_KEY if you want symptom
+                               # extraction (POST /symptoms/extract) to actually work
 docker compose -f ../docker-compose.yml up -d db
 uvicorn app.main:app --reload
 ```

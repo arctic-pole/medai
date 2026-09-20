@@ -17,6 +17,17 @@ The assistant reply is a **Phase 2 scaffold only** (`app/conversation/stub_reply
 user's text back with a placeholder note). No medical reasoning happens yet, per
 `phases.2_conversation.constraint`; that starts in Phase 3+.
 
+## Phase 3 endpoints (symptom extraction)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/symptoms/extract` | bearer | `{conversation_id}` → runs LLM extraction over that conversation's user messages, stores and returns the extracted symptoms. 400 if the conversation has no user messages; 404 if not owned by caller; **503 `LLM_ERROR`** if no `LLMProvider` is configured (fails closed, never fabricates); 502 `LLM_ERROR` on an extraction/network failure. |
+| GET | `/symptoms?conversation_id=` | bearer | List extracted symptoms for the current patient, optionally filtered to one conversation |
+
+Extraction is a separate, explicit call — not triggered automatically by `POST /messages` — so
+Phase 2's conversation flow keeps working even with no LLM provider configured. See
+`docs/AI_PIPELINE.md` for how this fits into the canonical pipeline.
+
 ## Phase 1 endpoints
 
 | Method | Path | Auth | Description |
@@ -49,5 +60,5 @@ Interactive schema: `GET /docs` (Swagger UI) or `GET /openapi.json` when the ser
 
 ## Not yet implemented
 
-`/symptoms`, `/vitals`, `/devices`, `/assessment`, `/evidence`, `/safety`, `/audit` (read API)
-from `api_endpoints.groups` land in later phases per `IMPLEMENTATION_PLAN.md`.
+`/vitals`, `/devices`, `/assessment`, `/evidence`, `/safety`, `/audit` (read API) from
+`api_endpoints.groups` land in later phases per `IMPLEMENTATION_PLAN.md`.

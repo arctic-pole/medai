@@ -7,7 +7,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import decode_token
-from app.db.models import Patient, User
+from app.db.models import Conversation, Patient, User
 from app.db.session import get_db
 
 _bearer_scheme = HTTPBearer()
@@ -39,3 +39,12 @@ async def get_current_patient(
     if patient is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="patient record not found")
     return patient
+
+
+async def get_owned_conversation(
+    db: AsyncSession, patient: Patient, conversation_id: uuid.UUID
+) -> Conversation:
+    conversation = await db.get(Conversation, conversation_id)
+    if conversation is None or conversation.patient_id != patient.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="conversation not found")
+    return conversation
