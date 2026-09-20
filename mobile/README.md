@@ -1,25 +1,38 @@
-# MEDAI Mobile — Phase 0 blocker
+# MEDAI Mobile
 
-Per `IMPLEMENTATION_PLAN.md` (Phase 0), the mobile app is a Flutter project. The Flutter SDK
-is **not installed** in the environment this scaffold was created in, so `flutter create .`
-could not be run here.
+A Flutter app. Scaffolded via `flutter create --org com.medai --project-name medai .`.
 
-**Blocker, reported per `medai_spec.yaml` `agent_rules.change_control`** ("If a requirement
-cannot be implemented: STOP and report the blocker."):
+## Status
 
-To unblock Phase 0's mobile skeleton, install the Flutter SDK
-(https://docs.flutter.dev/get-started/install) and run, from this `mobile/` directory:
+Phase 0 placeholder screen in place (`lib/main.dart` → `lib/screens/home_screen.dart`), verified
+with `flutter analyze` (clean), `flutter test` (passing), and `flutter build web` (succeeds).
+
+Proposed layout, filled in as later phases land (see `IMPLEMENTATION_PLAN.md`):
 
 ```
-flutter create --org com.medai --project-name medai .
+lib/
+  screens/   # one file per ux.screens entry in medai_spec.yaml
+  services/  # API client, audio capture/playback, etc.
+  state/     # app state management
 ```
 
-This will scaffold the standard Flutter project layout (`lib/`, `android/`, `ios/`, `test/`,
-`pubspec.yaml`, etc.) in place. After that, add the screens under `lib/screens/` per
-`ux.screens` in `medai_spec.yaml`, and an API client + audio capture/playback service under
-`lib/services/`, per the layout proposed in `IMPLEMENTATION_PLAN.md`.
+## Local development
 
-Also still open per the plan's consolidated decisions list: **target mobile platforms**
-(Android only vs Android + iOS) — confirm before running `flutter create`, since it affects
-which platform folders are generated/kept and which CI jobs are meaningful (iOS builds require
-a macOS runner).
+```bash
+flutter pub get
+flutter analyze
+flutter test
+flutter run -d chrome     # or: flutter run  (lists available devices)
+```
+
+## Known gaps
+
+- **Android toolchain not installed** (`flutter doctor` reports no Android SDK) — the project's
+  `android/` folder was generated, but building/running on an Android device or emulator needs
+  Android Studio + SDK installed separately (https://flutter.dev/to/windows-android-setup).
+- **iOS** cannot be built from Windows at all (needs macOS + Xcode) — the `ios/` folder is
+  generated for when that becomes available.
+- Currently verified working targets on this machine: **web** (Chrome) only. Mobile platform
+  scope (Android-only vs Android+iOS, per `IMPLEMENTATION_PLAN.md`'s open decisions list) is
+  still unconfirmed — all platform folders were kept since `flutter create` generates them by
+  default; unused ones can be deleted once the scope is decided.

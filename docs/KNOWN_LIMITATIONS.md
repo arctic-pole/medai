@@ -15,9 +15,12 @@
 - A `consents` table was added beyond `medai_spec.yaml`'s explicit `database.tables` list, to
   satisfy `security.consent_record_fields` (which names required fields but no table) — flagged
   in `IMPLEMENTATION_PLAN.md` audit notes and `docs/DATABASE.md`.
-- Mobile app is not yet scaffolded — the Flutter SDK was not available in the environment used
-  to bootstrap this repo. Phase 1's manual-entry screens (consent, onboarding, profile, history,
-  allergies, medications) are therefore not built. See `mobile/README.md`.
+- Mobile app is now scaffolded (Flutter 3.47.5, installed to `C:\src\flutter`) — `flutter
+  analyze`, `flutter test`, and `flutter build web` all pass. Only a Phase 0 placeholder screen
+  exists so far; Phase 1's manual-entry screens (consent, onboarding, profile, history,
+  allergies, medications) are not built yet. Android SDK and Xcode are not installed, so **web
+  (Chrome) is the only verified-working target on this machine** — see `mobile/README.md`.
+  Mobile platform scope (Android-only vs Android+iOS) is still an open decision.
 - No concrete AI/data provider (LLM, STT, TTS, embeddings, vector store, medical knowledge
   source, medication database) has been chosen. See `IMPLEMENTATION_PLAN.md`'s consolidated
   decisions list.

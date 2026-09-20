@@ -49,7 +49,15 @@ pytest
 
 ## Mobile — local development
 
-Not yet scaffolded. See `mobile/README.md`.
+Flutter app scaffolded in `mobile/`. See `mobile/README.md` for setup, status, and known gaps
+(no Android SDK / Xcode on this machine — web is the only verified target so far).
+
+```bash
+cd mobile
+flutter pub get
+flutter test
+flutter run -d chrome
+```
 
 ## Documentation
 
