@@ -21,14 +21,13 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 3 (Patient State — symptom extraction) done on the backend: `POST /symptoms/extract` runs
-an LLM (OpenAI, via the `LLMProvider` abstraction) over a conversation and stores structured
-symptoms; `app/patient_state/assembler.py` assembles the canonical patient state from the DB on
-demand. **No `OPENAI_API_KEY` is configured yet** — the endpoint fails closed with a clear error
-rather than fabricating a response (verified live); extraction logic itself is fully tested
-against a fake provider. Phases 0–2 (Foundation, Patient Data, Conversation) are also done. See
-`docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open decisions, and
-`mobile/README.md` for mobile-specific gaps.
+Phase 4 (Conversation Manager) done: `POST /messages` now conducts a structured interview,
+asking the highest-priority missing piece of information (allergies, medications, history,
+demographics — in that priority order) instead of just echoing back what the user said, working
+with or without an LLM configured. Phase 3 (`POST /symptoms/extract`) still needs a real
+`OPENAI_API_KEY` to do anything beyond fail closed. Phases 0–2 (Foundation, Patient Data,
+Conversation) are also done. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status
+and open decisions, and `mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 

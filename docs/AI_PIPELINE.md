@@ -60,7 +60,40 @@ otherwise given instruction-level trust. `LLMProvider.structured_generate`'s `sy
 is fully controlled by the calling code (`extraction.py`'s `_SYSTEM_PROMPT`), never derived from
 user input.
 
+## Conversation manager (Phase 4)
+
+`app/conversation/manager.py` + `app/conversation/missing_info.py` implement
+`conversation_manager.flow`: on each `POST /messages`, the canonical patient state is
+re-assembled (`build_patient_state`), compared against a fixed set of clinically-relevant
+fields, and the single highest-priority missing one becomes a follow-up question — replacing
+Phase 2's echo scaffold, exactly as that scaffold's own docstring said it would.
+
+- **Deterministic by design, not LLM-driven.** `identify_missing_info` and `select_action` never
+  call an LLM — they inspect `PatientState` (itself built only from DB rows) and apply
+  `conversation_manager.question_priority` in a fixed order. This means the interview works
+  fully even with `OPENAI_API_KEY` unset (as it currently is) — a deliberate choice given Phase
+  3's provider isn't wired to a real key yet, not a spec requirement. The LLM is used, when
+  configured, only for *phrasing* the chosen question more naturally
+  (`manager.py:_phrase_question`) — a best-effort NLG step with a deterministic template
+  fallback on any failure, never the decision itself.
+- **`conversation_manager.question_priority` coverage today**: `medication_allergy_safety`
+  (missing allergies/medications), `relevant_history` (missing medical history),
+  `lower_priority_context` (missing age/sex/height/weight), and `high_impact_missing_information`
+  for symptoms already in the `symptoms` table with an incomplete severity/duration/onset.
+  `emergency_indicators` and `required_measurements` are structurally present in the priority
+  order (so nothing needs reordering later) but have no item-generator yet: emergency detection
+  needs sourced, authoritative rules (`safety_engine.emergency_triage`, Phase 7) and
+  measurements need the vital/device subsystem (Phase 9) — this module must not invent either.
+- **`conversation_manager.permitted_actions` arbiter**: `app/conversation/manager.py:
+  validate_action` is the single application-side gate — per `conversation_manager.rule`
+  ("LLM may propose an action; application determines whether it is permitted"). Today only
+  `ASK_QUESTION`/`RESPOND` are implemented; `GET_VITAL`/`RETRIEVE_EVIDENCE`/`RUN_ASSESSMENT`/
+  `ESCALATE` are recognized as valid `permitted_actions` but rejected with
+  `NotImplementedError` until their backing subsystem (Phase 9/5/6/7 respectively) exists.
+  `RETRIEVE_HISTORY` isn't a separate runtime action here because history is already folded
+  into `PatientState` before this module runs.
+
 ## Not yet implemented
 
-`FOLLOW_UP_QUESTIONS`/`conversation_manager` question logic (Phase 4), evidence retrieval / RAG
-(Phase 5), the full `clinical_reasoner` (Phase 6), and everything downstream of it.
+Evidence retrieval / RAG (Phase 5), the full `clinical_reasoner` (Phase 6), and everything
+downstream of it — including real emergency detection and vital-based questions (see above).

@@ -180,8 +180,9 @@ class Conversation(Base):
 class Message(Base):
     """content is encrypted at rest like Phase 1's sensitive fields — a conversation transcript
     can carry the same kind of sensitive information as medical_history/allergies. Untrusted
-    per prompt_safety.untrusted_inputs; never reasoned over directly (see conversation.rule in
-    app/conversation/stub_reply.py's docstring)."""
+    per prompt_safety.untrusted_inputs; never reasoned over directly by an LLM here — only
+    app/patient_state/extraction.py (Phase 3) and app/conversation/manager.py (Phase 4) ever
+    hand message content to an LLM, and only in tightly scoped, structured ways."""
 
     __tablename__ = "messages"
 

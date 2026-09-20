@@ -22,7 +22,12 @@ async def test_conversation_created_and_listed(client: AsyncClient) -> None:
     assert any(c["id"] == conversation_id for c in list_resp.json())
 
 
-async def test_send_message_returns_stub_reply_and_persists(client: AsyncClient) -> None:
+async def test_send_message_asks_highest_priority_missing_info_and_persists(client: AsyncClient) -> None:
+    """Phase 4: with an empty profile/history/allergies/medications and no extracted symptoms
+    yet, medication_allergy_safety (allergies) is the highest-priority non-empty tier — see
+    app/conversation/missing_info.py. No LLM is configured in the test environment, so the
+    deterministic fallback template is used (app/conversation/manager.py)."""
+
     headers = await _authed_headers(client, "conv2@example.com")
     conversation_id = (await client.post("/conversations", headers=headers)).json()["id"]
 
@@ -37,14 +42,35 @@ async def test_send_message_returns_stub_reply_and_persists(client: AsyncClient)
     assert body["user_message"]["role"] == "user"
     assert body["user_message"]["content"] == "I have had a headache since this morning"
     assert body["assistant_message"]["role"] == "assistant"
-    assert "headache since this morning" in body["assistant_message"]["content"]
-    # Phase 2 scaffolding must not look like real reasoning/diagnosis
-    assert "placeholder" in body["assistant_message"]["content"].lower()
+    assert body["assistant_message"]["content"] == "Could you tell me about any known drug allergies?"
 
     list_resp = await client.get("/messages", headers=headers, params={"conversation_id": conversation_id})
     assert list_resp.status_code == 200
     roles = [m["role"] for m in list_resp.json()]
     assert roles == ["user", "assistant"]
+
+
+async def test_send_message_responds_when_nothing_left_to_ask(client: AsyncClient) -> None:
+    """A patient whose profile/history/allergies/medications are all filled in — and who has no
+    outstanding incomplete symptoms — gets the RESPOND fallback, not a question."""
+
+    headers = await _authed_headers(client, "conv4@example.com")
+    await client.patch(
+        "/profile",
+        headers=headers,
+        json={"age": 40, "sex": "female", "height_cm": 165, "weight_kg": 60, "consent_status": "granted"},
+    )
+    await client.post("/history", headers=headers, json={"condition": "asthma"})
+    await client.post("/allergies", headers=headers, json={"substance": "penicillin"})
+    await client.post("/medications", headers=headers, json={"name": "albuterol"})
+
+    conversation_id = (await client.post("/conversations", headers=headers)).json()["id"]
+    resp = await client.post(
+        "/messages", headers=headers, json={"conversation_id": conversation_id, "content": "just checking in"}
+    )
+
+    assert resp.status_code == 201
+    assert "don't have any more questions" in resp.json()["assistant_message"]["content"]
 
 
 async def test_cannot_message_another_patients_conversation(client: AsyncClient) -> None:

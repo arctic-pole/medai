@@ -5,9 +5,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_patient, get_owned_conversation
-from app.conversation.stub_reply import generate_stub_reply
+from app.conversation.manager import generate_reply
 from app.db.models import Message, Patient
 from app.db.session import get_db
+from app.patient_state.assembler import build_patient_state
+from app.providers.llm import LLMProvider, get_llm_provider
 from app.schemas.conversation import MessageCreateRequest, MessageExchangeResponse, MessageResponse
 
 router = APIRouter(prefix="/messages", tags=["messages"])
@@ -18,21 +20,23 @@ async def send_message(
     payload: MessageCreateRequest,
     patient: Patient = Depends(get_current_patient),
     db: AsyncSession = Depends(get_db),
+    llm: LLMProvider = Depends(get_llm_provider),
 ) -> MessageExchangeResponse:
-    """Stores the user's message and returns a Phase 2 scaffold reply — see
-    app/conversation/stub_reply.py. This performs no medical reasoning."""
+    """Stores the user's message, then runs the Phase 4 conversation manager
+    (app/conversation/manager.py) to decide and phrase the reply — either the
+    highest-priority follow-up question, or a "nothing more to ask" message. No medical
+    reasoning happens here (phases.2_conversation.constraint, carried into Phase 4)."""
 
-    await get_owned_conversation(db, patient, payload.conversation_id)
+    conversation = await get_owned_conversation(db, patient, payload.conversation_id)
 
-    user_message = Message(conversation_id=payload.conversation_id, role="user", content=payload.content)
+    user_message = Message(conversation_id=conversation.id, role="user", content=payload.content)
     db.add(user_message)
     await db.flush()
 
-    assistant_message = Message(
-        conversation_id=payload.conversation_id,
-        role="assistant",
-        content=generate_stub_reply(payload.content),
-    )
+    state = await build_patient_state(db, patient)
+    reply_text = await generate_reply(llm, state)
+
+    assistant_message = Message(conversation_id=conversation.id, role="assistant", content=reply_text)
     db.add(assistant_message)
     await db.commit()
     await db.refresh(user_message)
