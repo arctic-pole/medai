@@ -48,11 +48,13 @@ than guessed) and a naturally LLM-phrased follow-up question — see `docs/KNOWN
 for the exact example. Extraction is also still tested against a `FakeLLMProvider` (see
 `backend/tests/fakes.py`) so tests don't depend on a live key or network call.
 
-Model: `gemini-3.6-flash` by default (`GEMINI_MODEL` env var) — changed from the initially-wired
-`gemini-3.8-flash` after Phase 8 testing hit its free-tier cap (20 requests/day). That quota is
-tracked **per model id, not per key** — switching model bought a fresh quota, not a bigger one;
-expect to hit it again with enough live testing on any single free-tier model. Change the model
-any time via `.env`, no code change needed; a paid tier removes the ceiling entirely.
+Model: `gemini-3.7-flash` by default (`GEMINI_MODEL` env var) — the third model id tried after
+the first two (`gemini-3.8-flash`, `gemini-3.6-flash`) hit `429`s. **Correction**: an earlier
+version of this doc claimed the free-tier's 20-requests/day quota resets per model id — that
+turned out to be wrong or at least incomplete. `gemini-3.7-flash` hit its own `429` after only
+~5 requests despite never having been used before. The free tier appears to enforce some
+smaller cap shared across models under the same key/project. Switching `GEMINI_MODEL` is not a
+reliable way to get significantly more real calls; a paid tier or waiting for a daily reset is.
 
 ## Symptom extraction (Phase 3)
 
@@ -318,20 +320,28 @@ response, not an error.
   `check_medication_validation` (Phase 8) still runs on every request, but with nothing to
   compare against it is currently a no-op here specifically. Building a real extractor is
   future work.
-- **A real operational bug was found and fixed while wiring this up**: `GeminiProvider` made no
-  explicit request timeout, so a live end-to-end test that hit Gemini's rate limit mid-request
-  hung for several minutes instead of failing fast into the retry/fallback path that was
-  already designed to handle exactly this. Fixed with a 30s timeout on every
-  `client.aio.interactions.create` call (`app/providers/llm/gemini_provider.py`) — confirmed the
-  SDK accepts the kwarg without error; not yet re-verified end-to-end against a live rate limit
-  (today's quota was already exhausted across three model ids by the time this was found — see
-  `docs/KNOWN_LIMITATIONS.md`).
+- **The request-timeout fix (30s per `client.aio.interactions.create` call,
+  `app/providers/llm/gemini_provider.py`) has since been verified live**: the original
+  indefinite-hang bug is genuinely fixed — a real rate-limited request correctly failed both of
+  `generate_assessment`'s retry attempts within the expected bound and `get_validated_output`
+  correctly logged its fail-closed message. A related, smaller issue surfaced in the same test:
+  worst-case total latency for this endpoint (2 reasoning attempts × up to 2
+  `generate_assessment` calls across the correction path, each up to 30s) can approach 2
+  minutes when every attempt fails — easy to exceed with a client-side timeout under that.
+  Separately, it's not confirmed whether FastAPI/uvicorn cleanly handles writing a response to
+  an already-disconnected client in that scenario. Any caller of this endpoint should use a
+  generous timeout (2+ minutes) or expect lower worst-case latency only if `max_attempts`/
+  `max_correction_attempts` are reduced.
 - **Verified**: 112/112 tests (4 new, covering auth, ownership, a full fakes-driven happy path
-  with a real grounded citation, and the not-configured→`SAFE_FALLBACK` path). Live: auth,
-  conversation creation, and message-sending all worked against the real running server; the
-  `/assessment` call itself reached real Gemini and correctly hit (and began retrying against)
-  the day's exhausted rate limit before the request was stopped rather than left hanging — not
-  a clean end-to-end live success, disclosed rather than glossed over.
+  with a real grounded citation, and the not-configured→`SAFE_FALLBACK` path). **Live, cleanly**:
+  a patient with no data → a real (not fallback) appropriately-hedged "insufficient information"
+  `Assessment`, fast, first try; a patient with real extracted symptoms (sore throat + fever)
+  and real ingested MedlinePlus evidence → a real `200 OK` (confirmed via the server's access
+  log; the response body wasn't captured due to a client-side scripting mistake). **Live, via
+  the fail-closed path**: a third call hit a real rate limit and correctly resolved to
+  `SAFE_FALLBACK` internally, per the paragraph above. Also discovered while doing this: an
+  earlier claim in this doc that Gemini's quota resets per model id was wrong or incomplete —
+  see `docs/KNOWN_LIMITATIONS.md` for the correction.
 
 ## Not yet implemented
 

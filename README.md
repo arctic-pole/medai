@@ -26,19 +26,23 @@ clinical-shaped output, chaining patient state, evidence retrieval, clinical rea
 deterministic safety engine, and the output validator (Phases 3, 5, 6, 7, 8) into one gated
 pipeline. It always returns `200` with a valid `Assessment` body, falling back to a safe
 "insufficient information" response rather than an error whenever anything fails a check or
-goes wrong internally. Known gaps: vitals are always empty (Phase 9 doesn't exist yet) and the
-endpoint doesn't yet cross-check its own proposed medications against medication safety (no
-reliable way yet to extract a drug name from free text). A real bug was found and fixed while
-wiring this up — `GeminiProvider` had no request timeout, so a rate-limited call could hang for
-minutes; that's now bounded at 30s, though not yet re-verified against a live rate limit (see
-below). Phases 0–8 (Foundation through Output Validator) are all done — see
+goes wrong internally — **verified live**, including two clean real successes and one correct
+fail-closed resolution under a real rate limit. Known gaps: vitals are always empty (Phase 9
+doesn't exist yet); the endpoint doesn't yet cross-check its own proposed medications against
+medication safety (no reliable way yet to extract a drug name from free text); and worst-case
+latency can approach 2 minutes when the LLM is repeatedly failing (each of up to 4 real calls
+in the retry/correction path can take up to its own 30s timeout) — a real request-timeout bug
+(no bound at all) was found and fixed here, but callers should still use a generous client
+timeout. Phases 0–8 (Foundation through Output Validator) are all done — see
 `docs/KNOWN_LIMITATIONS.md` for the up-to-date phase-by-phase status.
 
-LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live across most phases; its free
-tier caps at 20 requests/day **per model id**, and today's testing has exhausted three separate
-model ids (`gemini-3.8-flash`, `gemini-3.6-flash`, and `gemini-2.5-flash` — the last of which
-turned out to be deprecated anyway). `GEMINI_MODEL` in `.env` lets you switch to a fresh quota,
-or wait for the daily reset. See `docs/AI_PIPELINE.md` for how the pieces fit together and
+LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live across most phases. Its free
+tier is rate-limited in a way that's turned out less predictable than first assumed: four model
+ids have now hit `429`s or turned out deprecated in one day of testing (`gemini-3.8-flash`,
+`gemini-3.6-flash`, `gemini-3.7-flash`, and `gemini-2.5-flash`) — switching `GEMINI_MODEL` is
+**not** a reliable way to get a fresh quota, despite what an earlier version of this doc said;
+a paid tier or waiting for the daily reset is the real fix. See `docs/AI_PIPELINE.md` for how
+the pieces fit together and
 `mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development

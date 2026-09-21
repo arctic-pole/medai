@@ -9,10 +9,15 @@
 - **LLM**: **Gemini**, via the official `google-genai` SDK's async Interactions API —
   https://ai.google.dev/gemini-api/docs. Originally OpenAI (kept as a second working
   `LLMProvider` implementation, `app/providers/llm/openai_provider.py`, not selected). Model:
-  `gemini-3.6-flash` (`GEMINI_MODEL` env var; changed from `gemini-3.8-flash` after hitting its
-  free-tier cap — the quota is tracked per model id, so switching bought a fresh quota, not a
-  bigger one; `gemini-3.6-flash` has since also been exhausted). Key supplied and verified live
-  (Phases 3, 4, 6, 8).
+  `gemini-3.7-flash` (`GEMINI_MODEL` env var). Key supplied and verified live across most
+  phases. **Correction to an earlier claim in this file**: switching model id does *not*
+  reliably grant a fresh 20-request daily quota — `gemini-3.7-flash` hit its own `429` after
+  only ~5 requests, having never been used before that. The free tier appears to enforce some
+  smaller cap shared across models under the same key/project, not a clean independent bucket
+  per model id as previously stated here. Four model ids have now been rate-limited in one day
+  (`gemini-3.8-flash`, `gemini-3.6-flash`, `gemini-3.7-flash`; `gemini-2.5-flash` separately
+  turned out to be deprecated, not rate-limited). Switching models is not a reliable way to get
+  more real calls — a paid tier or waiting for a reset is.
 - **STT**: `speech_to_text` (pub.dev) — https://pub.dev/packages/speech_to_text (Phase 2, done)
 - **TTS**: `flutter_tts` (pub.dev) — https://pub.dev/packages/flutter_tts (Phase 11, not built)
 - **Embeddings**: `BAAI/bge-large-en-v1.5` via `sentence-transformers`, self-hosted —
@@ -47,13 +52,25 @@
   against medication safety — `Assessment.medication_information` is free text, not a
   structured drug-name list, and no reliable extractor exists yet. `check_medication_validation`
   still runs but has nothing to compare against here. See `docs/AI_PIPELINE.md`.
-- **A real operational bug was found and fixed**: `GeminiProvider` had no request timeout, so a
-  rate-limited call could hang for minutes instead of failing fast into the already-designed
-  retry/fallback path. Fixed with an explicit 30s timeout on every Gemini call. Confirmed the
-  SDK accepts it; **not yet re-verified end-to-end live** — today's Gemini quota was already
-  exhausted across three model ids (`gemini-3.8-flash`, `gemini-3.6-flash`, plus
-  `gemini-2.5-flash` which turned out to be deprecated) by the time this was found. A live
-  end-to-end `/assessment` call with a working key is still owed.
+- **The request-timeout fix has now been verified live, and a second, smaller issue was found
+  in the process.** `GeminiProvider`'s 30s-per-call timeout works: a real rate-limited request
+  correctly failed both `generate_assessment` retry attempts within the expected bound and
+  `get_validated_output` correctly logged "failing closed with safe fallback" — the original
+  indefinite-hang bug is genuinely fixed. However, the *client* (a `curl` call with a 100s
+  limit) never received that response — worst-case total latency for this endpoint (2 reasoning
+  attempts × up to 2 `generate_assessment` calls in the correction path, each up to 30s) can
+  legitimately approach 2 minutes when every attempt fails, which is easy to exceed with a
+  100s-class client timeout. Separately, no response may have reached the client at all if
+  FastAPI/uvicorn doesn't handle writing to an already-disconnected socket gracefully — not
+  confirmed, since the dev server was stopped before this could be isolated further. Any client
+  of `POST /assessment` (including the mobile app, eventually) should use a generous timeout
+  (2+ minutes) or expect to reduce `max_attempts`/`max_correction_attempts` if lower worst-case
+  latency is wanted.
+- **Two clean live successes were also confirmed**: a patient with no data → a real,
+  appropriately-hedged "insufficient information" `Assessment` (not the fallback — genuine
+  model output), fast, first try; a patient with real extracted symptoms and real ingested
+  evidence → a real `200 OK` (confirmed via the server's access log — the response body itself
+  wasn't captured due to a client-side scripting mistake, not a server issue).
 - **Output-validator internals** (Phase 8, still accurate): 10 spec-defined checks, a bounded
   correction retry, and a fail-closed safe fallback — verified live in an earlier run with a
   real, unplanned rate-limit failure exercising the fail-closed path for real (full transcript
