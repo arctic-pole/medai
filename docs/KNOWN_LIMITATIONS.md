@@ -3,53 +3,70 @@
 > Updated as each phase lands. See `IMPLEMENTATION_PLAN.md` for the full phase plan and its
 > consolidated list of open decisions.
 
-## Current phase: 4 — Conversation Manager
+## Provider/source decisions (user-supplied, with references)
 
-- **`POST /messages` now conducts a structured interview** (`app/conversation/manager.py` +
-  `missing_info.py`): it asks the highest-priority missing item per
+- **STT** (Phase 2, done): `speech_to_text` (pub.dev) — https://pub.dev/packages/speech_to_text
+- **TTS** (Phase 11, not yet built): `flutter_tts` (pub.dev) — https://pub.dev/packages/flutter_tts
+- **Embeddings** (Phase 5, done): `BAAI/bge-large-en-v1.5` via `sentence-transformers`,
+  self-hosted — https://huggingface.co/BAAI/bge-large-en-v1.5 / https://www.sbert.net/. No API
+  key needed.
+- **Vector store** (Phase 5, done): pgvector — https://github.com/pgvector/pgvector (the
+  Postgres image in `docker-compose.yml`; extension now actually enabled, see `docs/DATABASE.md`)
+- **Medical knowledge sources**:
+  - MedlinePlus (government_health_guidance) — https://medlineplus.gov/webservices.html —
+    **wired in, Phase 5, done** (`app/providers/medical_knowledge/medlineplus_provider.py`)
+  - PubMed Central (peer_reviewed_literature) — https://www.ncbi.nlm.nih.gov/books/NBK25501/ —
+    approved but **not yet wired in**
+  - openFDA (official_drug_labels / medication_safety's MEDICATION_DB) —
+    https://open.fda.gov/apis/drug/label/ — approved but **not yet wired in** (natural fit for
+    Phase 7's `MEDICATION_DB`, not Phase 5's general knowledge retrieval)
+- **Safety threshold references** (for Phase 7/9, not yet built — recorded now so they aren't
+  lost before those phases start):
+  - AHA heart rate: https://www.heart.org/en/health-topics/high-blood-pressure/the-facts-about-high-blood-pressure/all-about-heart-rate-pulse
+  - AHA blood pressure: https://www.heart.org/en/health-topics/high-blood-pressure/understanding-blood-pressure-readings
+  - WHO pulse oximetry manual: https://www.who.int/publications/i/item/9789241501132
+  - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm
+
+## Current phase: 5 — Medical Knowledge (RAG)
+
+- **`POST /evidence/ingest` and `GET /evidence` are real, not mocked.** Ingesting "headache"
+  pulls real MedlinePlus articles (Headache, Migraine, Concussion); querying against them with
+  the real `BAAI/bge-large-en-v1.5` model correctly ranks the most relevant passage first, with
+  full source traceability (title, publisher, url, source_type, version, retrieval_date).
+  Verified both with 43/43 fast tests (against fakes — no model load, no network) and a full
+  live smoke test with real data. See `docs/AI_PIPELINE.md` for the exact query/result.
+- **RAG is not yet wired into the conversation loop.** `POST /messages` (Phase 4's conversation
+  manager) does not call `/evidence` — `RETRIEVE_EVIDENCE` is still explicitly rejected by
+  `app/conversation/manager.py`'s action arbiter (`NotImplementedError`) until Phase 6's
+  `clinical_reasoner` exists to actually consume retrieved evidence. Phase 5 only proves the
+  retrieval pipeline itself works end-to-end, per its own pass criterion.
+  PubMed Central and openFDA are approved sources not yet wired in (MedlinePlus only, so far).
+- Reranking is a no-op today (same order pgvector's cosine similarity returns) — no reranker
+  model was specified, so none was invented. See `docs/AI_PIPELINE.md`.
+- **`POST /messages` conducts a structured interview** (`app/conversation/manager.py` +
+  `missing_info.py`, Phase 4): the highest-priority missing item per
   `conversation_manager.question_priority`, deterministically, working with or without an LLM
-  configured (LLM is used only for optional natural phrasing, with a template fallback).
-  Verified: 35/35 backend tests, plus a two-turn live smoke test against the running dev
-  server showing the interview correctly advance from an allergy question to a medications
-  question once the allergy was answered.
-  `emergency_indicators` and `required_measurements` question tiers are **not yet populated** —
-  no item-generator exists for them (see `docs/AI_PIPELINE.md`): real emergency detection needs
-  sourced, authoritative rules (Phase 7's `safety_engine.emergency_triage`), and measurement
-  questions need the vital/device subsystem (Phase 9). Neither is invented here.
-  `RUN_ASSESSMENT`/`ESCALATE`/`GET_VITAL`/`RETRIEVE_EVIDENCE` are recognized as valid
-  `permitted_actions` by the arbiter but explicitly rejected (`NotImplementedError`) until
-  Phase 5/6/7/9 exist.
+  configured. `emergency_indicators` and `required_measurements` question tiers are still not
+  populated (need Phase 7/9). Mobile doesn't call `/symptoms/extract`, so the
+  `high_impact_missing_information` tier never triggers in the live mobile flow yet.
 - **LLM provider decided (OpenAI) but still no API key supplied.** Symptom extraction
-  (`POST /symptoms/extract`) still fails closed with `LLM_ERROR` as before. The conversation
-  manager degrades gracefully to templated questions in the same situation — this is by design,
-  not a workaround.
-- Phase 2's stub echo reply (`app/conversation/stub_reply.py`) has been removed and replaced by
-  the conversation manager, exactly as that module's own docstring said it would be in Phase 4.
-- Mobile doesn't call `/symptoms/extract` at all yet, so the `high_impact_missing_information`
-  tier (asking about severity/duration/onset of an already-reported symptom) never triggers in
-  the current end-to-end mobile flow — only the profile/allergy/history/demographics tiers do.
-  Wiring extraction into the live conversation loop is a reasonable Phase 4/5 follow-up, not
-  required for this phase's pass criterion ("AI can conduct a structured symptom interview").
+  (`POST /symptoms/extract`) still fails closed with `LLM_ERROR`.
 - Mobile's auth is still a **device-bootstrapped placeholder** (no real login/consent screen —
   Phase 1 mobile work). See `mobile/README.md`.
-- **STT decision made**: on-device/browser-native speech recognition via Flutter's
-  `speech_to_text` package, not a cloud vendor.
 - Dev-only CORS (`allow_origins=["*"]`) on the backend — must be locked down before any real
   deployment (Phase 13).
-- Backend connects to Postgres (pgvector/pgvector:pg16 via docker-compose). The `pgvector`
-  extension itself is not yet created; deferred to Phase 5.
 - Auth, patient profile, medical history, allergies, current medications, conversations,
-  messages, and symptoms all have working CRUD/APIs with per-user access control,
-  application-level encryption at rest for sensitive columns, and audit logging.
+  messages, symptoms, and clinical evidence all have working CRUD/APIs with per-user access
+  control (where applicable), application-level encryption at rest for sensitive patient
+  columns, and audit logging.
 - A `consents` table was added beyond `medai_spec.yaml`'s explicit `database.tables` list, to
   satisfy `security.consent_record_fields` — flagged in `IMPLEMENTATION_PLAN.md` and
   `docs/DATABASE.md`.
 - Mobile app is scaffolded (Flutter 3.47.5). Android SDK and Xcode are not installed, so **web
   (Chrome) is the only verified-working target on this machine**. Mobile platform scope
   (Android-only vs Android+iOS) is still an open decision.
-- No concrete provider chosen yet for backend-side STT/TTS/embeddings/vector store/medical
-  knowledge source/medication database. See `IMPLEMENTATION_PLAN.md`'s consolidated decisions
-  list (LLM is resolved: OpenAI, key pending).
+- No concrete provider chosen yet for backend-side TTS or the medication database (openFDA is
+  approved but not yet wired in — natural fit for Phase 7).
 - No formal compliance posture (HIPAA/GDPR-equivalent or explicit non-claim) has been adopted;
   in the interim, all patient data is handled as if it were regulated health data.
 - This is a prototype. It is not a licensed medical device, not a diagnostic system, and must

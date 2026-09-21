@@ -1,7 +1,8 @@
 # MEDAI — Database
 
-PostgreSQL only (+ pgvector extension for embeddings, added in Phase 5). Access via SQLAlchemy
-2.x async ORM; schema changes via Alembic migrations in `backend/alembic/versions/`.
+PostgreSQL only (+ pgvector extension for embeddings — enabled in the Phase 5 migration via
+`CREATE EXTENSION IF NOT EXISTS vector`). Access via SQLAlchemy 2.x async ORM; schema changes
+via Alembic migrations in `backend/alembic/versions/`.
 
 ## Phase 1 tables
 
@@ -18,6 +19,8 @@ PostgreSQL only (+ pgvector extension for embeddings, added in Phase 5). Access 
 | `conversations` | Phase 2: one row per conversation | Belongs to a patient |
 | `messages` | Phase 2: one row per turn (`role` = user/assistant) | `content` encrypted at rest, same as Phase 1's sensitive columns |
 | `symptoms` | Phase 3: one row per LLM-extracted symptom | `symptom_extraction.fields`; free-text fields encrypted at rest; linked to the source `conversation_id` |
+| `clinical_sources` | Phase 5: one row per ingested document *version* | Public reference content, not patient data — not encrypted. Never overwritten: re-ingesting the same `url` marks the old row `superseded_status='superseded'` and inserts a new one with an incremented `version` (`knowledge_base.versioning`) |
+| `knowledge_chunks` | Phase 5: one row per chunk of a `clinical_sources` row | `embedding` is a `vector(1024)` column (pgvector) with an HNSW cosine-distance index; `content` is plain `Text` (public data) |
 
 The canonical `patient_state.schema` (patient + symptoms + medical_history + allergies +
 medications + vitals + unknowns + data_quality, etc.) is **not** stored as a single blob — it's
@@ -42,6 +45,10 @@ complementary to TLS in transit and any infra-level disk encryption decided in P
 **Known Alembic caveat:** `alembic revision --autogenerate` does not add the
 `import app.db.encrypted_types` line for columns using this custom type — add it by hand to each
 generated migration that touches an encrypted column (see the Phase 1 migration for an example).
+The same is true for `pgvector.sqlalchemy.Vector` columns (`import pgvector.sqlalchemy`); the
+Phase 5 migration also needed a hand-added `CREATE EXTENSION IF NOT EXISTS vector` before the
+`vector` column type can be created, and a hand-added HNSW index (autogenerate doesn't propose
+vector indexes on its own).
 
 ## Local development
 

@@ -15,19 +15,21 @@ for the full, authoritative statement of scope.
 - `IMPLEMENTATION_PLAN.md` — an audit of the spec plus a phase-by-phase build plan expanding
   the spec's own `phases:` block into concrete tasks, tech choices, and exit criteria.
 - `backend/` — Python 3.12 + FastAPI service.
-- `mobile/` — Flutter app (not yet scaffolded — see `mobile/README.md` for the current blocker).
+- `mobile/` — Flutter app (voice/text conversation UI) — see `mobile/README.md` for status.
 - `docs/` — architecture, API, database, AI pipeline, safety, security, testing, deployment,
   and known-limitations documentation, written incrementally per phase.
 
 ## Status
 
-Phase 4 (Conversation Manager) done: `POST /messages` now conducts a structured interview,
-asking the highest-priority missing piece of information (allergies, medications, history,
-demographics — in that priority order) instead of just echoing back what the user said, working
-with or without an LLM configured. Phase 3 (`POST /symptoms/extract`) still needs a real
-`OPENAI_API_KEY` to do anything beyond fail closed. Phases 0–2 (Foundation, Patient Data,
-Conversation) are also done. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status
-and open decisions, and `mobile/README.md` for mobile-specific gaps.
+Phase 5 (Medical Knowledge / RAG) done: `POST /evidence/ingest` pulls real content from
+MedlinePlus, chunks and embeds it (self-hosted `BAAI/bge-large-en-v1.5`), and stores it in
+Postgres/pgvector; `GET /evidence?query=` retrieves it back, ranked and traceable to its source
+— verified live with real data (see `docs/AI_PIPELINE.md`). Phase 4 (Conversation Manager) also
+done: `POST /messages` conducts a structured interview, working with or without an LLM
+configured. Phase 3 (`POST /symptoms/extract`) still needs a real `OPENAI_API_KEY` to do
+anything beyond fail closed. Phases 0–2 (Foundation, Patient Data, Conversation) are also done.
+See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open decisions, and
+`mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 
@@ -35,12 +37,17 @@ and open decisions, and `mobile/README.md` for mobile-specific gaps.
 cd backend
 python -m venv .venv
 .venv\Scripts\activate        # Windows
+pip install torch --index-url https://download.pytorch.org/whl/cpu  # CPU-only wheel first,
+                               # otherwise sentence-transformers may pull a multi-GB CUDA build
 pip install -e ".[dev]"
 cp ../.env.example ../.env    # then edit values, incl. OPENAI_API_KEY if you want symptom
                                # extraction (POST /symptoms/extract) to actually work
 docker compose -f ../docker-compose.yml up -d db
 uvicorn app.main:app --reload
 ```
+
+First use of `POST /evidence/ingest` or `/evidence` downloads the `BAAI/bge-large-en-v1.5`
+embedding model (~1.3GB) from Hugging Face and caches it — expect the first call to take a while.
 
 Health check: `GET http://localhost:8000/healthz` → `{"status": "ok"}`
 

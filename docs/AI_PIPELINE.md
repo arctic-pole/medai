@@ -1,6 +1,6 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This is the Phase 3 state.
+> Filled in incrementally as each AI-related phase lands. This is the Phase 5 state.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -12,8 +12,10 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 ```
 
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
-symptom extraction only, Phase 3, this doc). Everything from `FOLLOW_UP_QUESTIONS` onward is
-later phases (4–11).
+symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) ...
+`EVIDENCE_RETRIEVAL` (Phase 5, this doc — not yet wired into the conversation loop itself, see
+below). `VITAL/HEALTH_DATA` and everything from `CLINICAL_REASONING` onward are later phases
+(6, 9–11).
 
 ## Provider abstraction
 
@@ -93,7 +95,46 @@ Phase 2's echo scaffold, exactly as that scaffold's own docstring said it would.
   `RETRIEVE_HISTORY` isn't a separate runtime action here because history is already folded
   into `PatientState` before this module runs.
 
+## Medical knowledge / RAG (Phase 5)
+
+`rag_pipeline`: `SOURCE_INGESTION → CLEANING → METADATA → CHUNKING → EMBEDDINGS → VECTOR_DB →
+RETRIEVAL → RERANKING → EVIDENCE_PACKAGE`. All user-decided, with references recorded in
+`docs/KNOWN_LIMITATIONS.md`:
+
+- **`MedicalKnowledgeProvider`**: `app/providers/medical_knowledge/medlineplus_provider.py` —
+  real calls to MedlinePlus's health-topics web service (no API key). PubMed Central and openFDA
+  are also user-approved sources but not yet wired in (see that file's module docstring for how
+  to add one). `knowledge_base.approved_sources` category: `government_health_guidance`.
+- **`EmbeddingProvider`**: `app/providers/embeddings/sentence_transformers_provider.py` —
+  self-hosted `BAAI/bge-large-en-v1.5` (1024-dim, normalized), no API key, loaded lazily
+  (~1.3GB, cached by Hugging Face after first use). Per the model card, queries get a
+  `"Represent this sentence for searching relevant passages: "` instruction prefix; indexed
+  passages get none — `EmbeddingProvider` has separate `embed_query`/`embed_documents` methods
+  specifically so this asymmetry isn't lost.
+- **`VectorStore`**: `app/providers/vector_store/pgvector_store.py` — pgvector, the same
+  Postgres instance as everything else (no separate vector DB service). Cosine distance via an
+  HNSW index (`knowledge_chunks_embedding_hnsw_idx`).
+- **Chunking**: `app/rag/chunking.py` — fixed-size word windows (180 words, 30-word overlap),
+  source-agnostic.
+- **Versioning**: `app/rag/ingest.py:_supersede_existing` — re-ingesting a previously-seen `url`
+  marks the prior `ClinicalSource` row `superseded_status='superseded'` (new `version`, new row)
+  rather than overwriting it or its chunks (`knowledge_base.versioning`). Retrieval only ever
+  searches `superseded_status='current'` chunks.
+- **Reranking**: not implemented as a separate step — `retrieve_evidence` returns results in the
+  order pgvector's cosine-similarity search gives them. No reranker model was specified by the
+  user, so none was invented; `app/rag/retrieval.py` has a comment marking where a cross-encoder
+  reranker would slot in if one is added later.
+- **Traceability**: every `EvidenceItem` carries its source's title, publisher, url,
+  source_type, version, and retrieval_date (`evidence_package.rule`) — never just raw text.
+
+**Verified live**, not just against fakes: `POST /evidence/ingest {"topic": "headache"}` pulled
+three real MedlinePlus articles (Headache, Migraine, Concussion); `GET /evidence?query=what
+causes tension headaches and how long do they last` correctly ranked the Headache article's
+relevant passage first (similarity 0.75), with full source attribution. This directly
+demonstrates the Phase 5 pass criterion: "Given a clinical topic, relevant evidence can be
+retrieved and traced to its source."
+
 ## Not yet implemented
 
-Evidence retrieval / RAG (Phase 5), the full `clinical_reasoner` (Phase 6), and everything
-downstream of it — including real emergency detection and vital-based questions (see above).
+The full `clinical_reasoner` (Phase 6) and everything downstream of it — including real
+emergency detection and vital-based questions (see the conversation manager section above).

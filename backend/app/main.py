@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.allergies import router as allergies_router
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
+from app.api.evidence import router as evidence_router
 from app.api.health import router as health_router
 from app.api.history import router as history_router
 from app.api.medications import router as medications_router
@@ -41,6 +42,7 @@ def create_app() -> FastAPI:
     app.include_router(conversations_router)
     app.include_router(messages_router)
     app.include_router(symptoms_router)
+    app.include_router(evidence_router)
 
     return app
 

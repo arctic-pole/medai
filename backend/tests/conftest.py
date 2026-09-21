@@ -4,6 +4,7 @@ os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://medai:medai@localhos
 
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import async_sessionmaker
 
 from app.db import models  # noqa: F401 — registers tables on Base.metadata
@@ -14,6 +15,9 @@ from app.main import app
 @pytest_asyncio.fixture(scope="session", autouse=True)
 async def _schema():
     async with engine.begin() as conn:
+        # knowledge_chunks.embedding is a pgvector column (Base.metadata.create_all doesn't
+        # run CREATE EXTENSION for us, unlike the Alembic migration used against the real DB).
+        await conn.execute(text("CREATE EXTENSION IF NOT EXISTS vector"))
         await conn.run_sync(Base.metadata.create_all)
     yield
     async with engine.begin() as conn:

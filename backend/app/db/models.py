@@ -1,12 +1,16 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, func
+from pgvector.sqlalchemy import Vector
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.encrypted_types import EncryptedString
 from app.db.session import Base
+
+# BAAI/bge-large-en-v1.5 (app/providers/embeddings/sentence_transformers_provider.py) — 1024-dim.
+EMBEDDING_DIMENSIONS = 1024
 
 
 def _uuid_pk() -> Mapped[uuid.UUID]:
@@ -195,6 +199,44 @@ class Message(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     conversation: Mapped["Conversation"] = relationship(back_populates="messages")
+
+
+class ClinicalSource(Base):
+    """knowledge_base — one row per ingested document version. Never overwritten: re-ingesting
+    the same url marks the prior row's superseded_status and inserts a new one, per
+    knowledge_base.versioning ("Never overwrite knowledge without tracking versions"). Content
+    here is public reference material, not patient data — no EncryptedString needed."""
+
+    __tablename__ = "clinical_sources"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    title: Mapped[str] = mapped_column(String, nullable=False)
+    publisher: Mapped[str] = mapped_column(String, nullable=False)
+    url: Mapped[str] = mapped_column(String, nullable=False)
+    source_type: Mapped[str] = mapped_column(String, nullable=False)  # knowledge_base.approved_sources
+    version: Mapped[int] = mapped_column(Integer, default=1, nullable=False)
+    publication_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    update_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    retrieval_date: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    effective_date: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    superseded_status: Mapped[str] = mapped_column(String, default="current", nullable=False)  # current | superseded
+
+    chunks: Mapped[list["KnowledgeChunk"]] = relationship(back_populates="source")
+
+
+class KnowledgeChunk(Base):
+    """rag_pipeline: one row per chunk of an ingested ClinicalSource, with its embedding."""
+
+    __tablename__ = "knowledge_chunks"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    source_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("clinical_sources.id"), nullable=False)
+    chunk_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+    embedding: Mapped[list[float]] = mapped_column(Vector(EMBEDDING_DIMENSIONS), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    source: Mapped["ClinicalSource"] = relationship(back_populates="chunks")
 
 
 class AuditLog(Base):

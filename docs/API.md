@@ -17,6 +17,17 @@ No medical reasoning happens in `POST /messages` (per `phases.2_conversation.con
 carried into Phase 4) — it asks a structured, deterministic follow-up question, not a
 clinical assessment; that starts in Phase 6.
 
+## Phase 5 endpoints (medical knowledge / RAG)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/evidence/ingest` | bearer | `{topic}` → fetches real documents for `topic` from MedlinePlus, chunks and embeds them (`BAAI/bge-large-en-v1.5`), stores them, and returns the created `ClinicalSource` rows. Re-ingesting a previously-seen URL supersedes the old version rather than overwriting it. |
+| GET | `/evidence?query=&top_k=` | bearer | Embeds `query`, runs a pgvector cosine-similarity search over ingested chunks, and returns each match with its similarity score and full source attribution (title, publisher, url, source_type, version, retrieval_date). |
+
+Verified live end-to-end with real data: ingesting "headache" pulled real MedlinePlus articles
+(Headache, Migraine, Concussion); querying "what causes tension headaches and how long do they
+last" correctly ranked the Headache article's relevant passage first. See `docs/AI_PIPELINE.md`.
+
 ## Phase 3 endpoints (symptom extraction)
 
 | Method | Path | Auth | Description |
@@ -60,5 +71,5 @@ Interactive schema: `GET /docs` (Swagger UI) or `GET /openapi.json` when the ser
 
 ## Not yet implemented
 
-`/vitals`, `/devices`, `/assessment`, `/evidence`, `/safety`, `/audit` (read API) from
-`api_endpoints.groups` land in later phases per `IMPLEMENTATION_PLAN.md`.
+`/vitals`, `/devices`, `/assessment`, `/safety`, `/audit` (read API) from `api_endpoints.groups`
+land in later phases per `IMPLEMENTATION_PLAN.md`.
