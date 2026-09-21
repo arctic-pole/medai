@@ -26,11 +26,11 @@ MedlinePlus, chunks and embeds it (self-hosted `BAAI/bge-large-en-v1.5`), and st
 Postgres/pgvector; `GET /evidence?query=` retrieves it back, ranked and traceable to its source
 — verified live with real data (see `docs/AI_PIPELINE.md`). Phase 4 (Conversation Manager) also
 done: `POST /messages` conducts a structured interview, working with or without an LLM
-configured. Phase 3 (`POST /symptoms/extract`) still needs a real `GEMINI_API_KEY` to do
-anything beyond fail closed (LLM provider is Gemini — see `docs/KNOWN_LIMITATIONS.md`).
-Phases 0–2 (Foundation, Patient Data, Conversation) are also done.
-See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open decisions, and
-`mobile/README.md` for mobile-specific gaps.
+configured. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`) — **now configured and verified
+live**: Phase 3 extraction and Phase 4's natural question phrasing both confirmed against the
+real API (see `docs/KNOWN_LIMITATIONS.md` for the example). Phases 0–2 (Foundation, Patient
+Data, Conversation) are also done. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date
+status and open decisions, and `mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 

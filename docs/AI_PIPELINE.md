@@ -36,10 +36,12 @@ swapping providers means writing a new `LLMProvider` subclass and changing that 
 
 `GeminiProvider` fails closed: with no `GEMINI_API_KEY` configured, every method raises
 `LLMNotConfiguredError` rather than returning a fabricated response
-(`error_handling.fail_closed_principle`) — verified live. As of this writing no key has been
-supplied, so extraction is implemented and tested (against a `FakeLLMProvider`, see
-`backend/tests/fakes.py`) but has not been exercised against the real Gemini API — see
-`docs/KNOWN_LIMITATIONS.md`.
+(`error_handling.fail_closed_principle`) — verified live. A real key is now configured and has
+been exercised against the live API: a real message produced a correct structured extraction
+(right symptom, severity, onset, location, trigger, with unmentioned fields left `null` rather
+than guessed) and a naturally LLM-phrased follow-up question — see `docs/KNOWN_LIMITATIONS.md`
+for the exact example. Extraction is also still tested against a `FakeLLMProvider` (see
+`backend/tests/fakes.py`) so tests don't depend on a live key or network call.
 
 Model: `gemini-3.8-flash` by default (`GEMINI_MODEL` env var) — the current model at the time
 this was wired in; change it any time via `.env`, no code change needed.
@@ -83,11 +85,13 @@ Phase 2's echo scaffold, exactly as that scaffold's own docstring said it would.
 - **Deterministic by design, not LLM-driven.** `identify_missing_info` and `select_action` never
   call an LLM — they inspect `PatientState` (itself built only from DB rows) and apply
   `conversation_manager.question_priority` in a fixed order. This means the interview works
-  fully even with `GEMINI_API_KEY` unset (as it currently is) — a deliberate choice given the
-  LLM provider isn't wired to a real key yet, not a spec requirement. The LLM is used, when
-  configured, only for *phrasing* the chosen question more naturally
+  fully even with `GEMINI_API_KEY` unset — a deliberate design choice, not a spec requirement.
+  The LLM is used, when configured, only for *phrasing* the chosen question more naturally
   (`manager.py:_phrase_question`) — a best-effort NLG step with a deterministic template
-  fallback on any failure, never the decision itself.
+  fallback on any failure, never the decision itself. Both paths are now verified live: the
+  deterministic decision logic, and (once a real key was configured) the LLM phrasing path
+  producing a natural question instead of the fallback template — see
+  `docs/KNOWN_LIMITATIONS.md`.
 - **`conversation_manager.question_priority` coverage today**: `medication_allergy_safety`
   (missing allergies/medications), `relevant_history` (missing medical history),
   `lower_priority_context` (missing age/sex/height/weight), and `high_impact_missing_information`
