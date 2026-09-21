@@ -11,7 +11,8 @@
   `LLMProvider` implementation, `app/providers/llm/openai_provider.py`, not selected). Model:
   `gemini-3.6-flash` (`GEMINI_MODEL` env var; changed from `gemini-3.8-flash` after hitting its
   free-tier cap — the quota is tracked per model id, so switching bought a fresh quota, not a
-  bigger one). Key supplied and verified live (Phases 3, 4, 6, 8).
+  bigger one; `gemini-3.6-flash` has since also been exhausted). Key supplied and verified live
+  (Phases 3, 4, 6, 8).
 - **STT**: `speech_to_text` (pub.dev) — https://pub.dev/packages/speech_to_text (Phase 2, done)
 - **TTS**: `flutter_tts` (pub.dev) — https://pub.dev/packages/flutter_tts (Phase 11, not built)
 - **Embeddings**: `BAAI/bge-large-en-v1.5` via `sentence-transformers`, self-hosted —
@@ -33,25 +34,33 @@
   - WHO pulse oximetry manual: https://cdn.who.int/media/docs/default-source/patient-safety/pulse-oximetry/who-ps-pulse-oxymetry-training-manual-en.pdf — **direct primary-source fetch succeeded**; exact thresholds quoted in `app/safety/vital_rules.py`.
   - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm — **direct fetch succeeded**; exact quote in `app/safety/vital_rules.py`. No dangerous-fever/hypothermia threshold is stated on this page, so none is encoded as a rule.
 
-## Current phase: 8 — Output Validator (internal capability only)
+## Current phase: 8+ — Output Validator, then `POST /assessment` wired up
 
-- **Same scoping as Phase 6/7, same reason**: no API endpoint. This phase closes the gate
-  `bypass_forbidden` requires, but wiring an actual `/assessment` endpoint was deliberately
-  deferred rather than assumed — `get_validated_output()` is the only function intended to
-  return release-fit output; `reasoner.generate_assessment()` alone is never user-facing.
-- **Verified live in an unusually strong way**: real Gemini calls, plus a real, unplanned
-  failure (a `429` rate limit mid-run) that exercised the fail-closed path for real rather than
-  simulated. Case A (normal vitals): a transient `503` was retried successfully, and the
-  resulting assessment passed all 10 checks on the first try. Case B (SpO2 86%,
-  `safety_engine` decision `ESCALATE`): the LLM's first attempt said `status: "caution"`,
-  ignoring the deterministic escalation — `check_safety_engine_result` correctly caught it and
-  triggered the correction pipeline; the retry then hit the real rate limit, and
-  `get_validated_output` correctly returned `SAFE_FALLBACK` verbatim rather than releasing the
-  rejected assessment or crashing. Full transcript in `docs/AI_PIPELINE.md`.
-- **Gemini's free-tier quota (20 requests/day) is tracked per model id**, discovered while
-  running this phase's live verification — `gemini-3.8-flash` was exhausted first; switching to
-  `gemini-3.6-flash` unblocked one more round before that also hit its own cap. Expect to hit
-  this again with enough live testing on any single free-tier model; a paid tier removes it.
+- **`POST /assessment` is now live** (`app/api/assessment.py`) — the first endpoint allowed to
+  return clinical-shaped output, chaining Phase 3/5/6/7/8 together for real:
+  `build_patient_state` → `build_evidence_package` → `evaluate_safety` (`vitals={}` — Phase 9
+  doesn't exist) → `get_validated_output`. Always returns `200` with an `Assessment` body —
+  `SAFE_FALLBACK` included, since that's a legitimate response, not an error. 112/112 tests
+  (4 new) cover auth, ownership (404), a fakes-driven grounded happy path, and the
+  not-configured→`SAFE_FALLBACK` path.
+- **Known gap, stated plainly**: the endpoint never cross-checks its own proposed medications
+  against medication safety — `Assessment.medication_information` is free text, not a
+  structured drug-name list, and no reliable extractor exists yet. `check_medication_validation`
+  still runs but has nothing to compare against here. See `docs/AI_PIPELINE.md`.
+- **A real operational bug was found and fixed**: `GeminiProvider` had no request timeout, so a
+  rate-limited call could hang for minutes instead of failing fast into the already-designed
+  retry/fallback path. Fixed with an explicit 30s timeout on every Gemini call. Confirmed the
+  SDK accepts it; **not yet re-verified end-to-end live** — today's Gemini quota was already
+  exhausted across three model ids (`gemini-3.8-flash`, `gemini-3.6-flash`, plus
+  `gemini-2.5-flash` which turned out to be deprecated) by the time this was found. A live
+  end-to-end `/assessment` call with a working key is still owed.
+- **Output-validator internals** (Phase 8, still accurate): 10 spec-defined checks, a bounded
+  correction retry, and a fail-closed safe fallback — verified live in an earlier run with a
+  real, unplanned rate-limit failure exercising the fail-closed path for real (full transcript
+  in `docs/AI_PIPELINE.md`).
+- **Gemini's free-tier quota (20 requests/day) is tracked per model id**, not per key —
+  switching model buys a fresh quota, not a bigger one. Expect to hit this again with enough
+  live testing on any single free-tier model; a paid tier removes it.
 
 ## Phase 7 — Safety Engine & Medication Safety (internal capability only)
 
@@ -62,13 +71,16 @@ vitals, correctly escalated and logged to `safety_events`. Medication matching i
 substring text-matching against label prose (not a structured interaction graph) — documented
 limitation: misses drug-class allergies and word-form mismatches, always errs toward
 blocking/review rather than a silent allow. No `safety_rules` DB table (version-controlled
-Python list instead, see `docs/DATABASE.md`). No API endpoint (see Phase 8 above for why).
+Python list instead, see `docs/DATABASE.md`). `evaluate_safety()` is reachable via
+`POST /assessment` now (see above); `check_candidate_medication()` still isn't called from
+there (the known medication-cross-check gap).
 
 ## Phase 6 — Clinical Reasoning (internal capability only)
 
 Verified live against real Gemini: a real evidence package produced a schema-valid `Assessment`
 grounded in real retrieved evidence, passing both defense-in-depth checks on the first attempt.
-No API endpoint (see Phase 8 above for why). Also fixed a test-hermeticity bug here: once a
+Reachable via `POST /assessment` now (see above), always through `get_validated_output()`, never
+called standalone. Also fixed a test-hermeticity bug here: once a
 real `GEMINI_API_KEY` existed, tests that didn't explicitly mock the LLM started making live
 API calls — `backend/tests/conftest.py` now force-blanks LLM API keys for the test process
 regardless of `.env` content.

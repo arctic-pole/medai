@@ -17,6 +17,20 @@ No medical reasoning happens in `POST /messages` (per `phases.2_conversation.con
 carried into Phase 4) — it asks a structured, deterministic follow-up question, not a
 clinical assessment; that starts in Phase 6.
 
+## Phase 6-8 endpoint (assessment) — the first clinical-output endpoint
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/assessment` | bearer | `{conversation_id}` → runs the full internal pipeline (Phase 3 patient state → Phase 5 evidence retrieval → Phase 6 clinical reasoning → Phase 7 safety engine → Phase 8 output validator) and returns a validated `Assessment` (`output_schema`, verbatim field set). 404 if the conversation isn't owned by the caller. Never returns an HTTP error for "the LLM failed" or "the assessment was rejected" — those resolve to the `SAFE_FALLBACK` `Assessment` (still `200`), per `output_validator.on_failure`/`on_validator_failure`. |
+
+This is the **only** endpoint in the codebase allowed to hand a client anything
+Assessment-shaped — `app/reasoning`, `app/safety`, and `app/validation` were all built
+internal-only across Phases 6-8 specifically because nothing could safely expose them until
+this endpoint's gate (`get_validated_output`) existed. See `docs/AI_PIPELINE.md` for the full
+chain and its known gaps (vitals are always empty — Phase 9 doesn't exist yet; the endpoint's
+own proposed medications aren't cross-checked against medication safety, since `output_schema`'s
+`medication_information` is free text, not a structured drug list).
+
 ## Phase 5 endpoints (medical knowledge / RAG)
 
 | Method | Path | Auth | Description |
@@ -71,5 +85,5 @@ Interactive schema: `GET /docs` (Swagger UI) or `GET /openapi.json` when the ser
 
 ## Not yet implemented
 
-`/vitals`, `/devices`, `/assessment`, `/safety`, `/audit` (read API) from `api_endpoints.groups`
-land in later phases per `IMPLEMENTATION_PLAN.md`.
+`/vitals`, `/devices`, `/safety`, `/audit` (read API) from `api_endpoints.groups` land in later
+phases per `IMPLEMENTATION_PLAN.md`.

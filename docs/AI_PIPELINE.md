@@ -1,6 +1,7 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This is the Phase 8 state.
+> Filled in incrementally as each AI-related phase lands. This reflects Phase 8 plus wiring
+> `POST /assessment` — the first user-facing clinical-output endpoint.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -14,9 +15,12 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
 symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) ...
 `EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` +
-`MEDICATION_SAFETY` (Phase 7) → `OUTPUT_VALIDATION` (Phase 8, this doc). All of Phase 6/7/8 are
-internal capabilities only — not wired into the conversation loop or exposed via any endpoint,
-see below. `VITAL/HEALTH_DATA` (Phase 9) onward is still later phases.
+`MEDICATION_SAFETY` (Phase 7) → `OUTPUT_VALIDATION` (Phase 8) → `TEXT_RESPONSE`, now reachable
+via `POST /assessment` (`app/api/assessment.py`) — see "The assessment endpoint" below.
+`app/reasoning`, `app/safety`, and `app/validation` remain otherwise unreachable from the API;
+this endpoint is the sole caller allowed to treat their output as user-facing.
+`VITAL/HEALTH_DATA` (Phase 9) onward is still later phases — this endpoint always evaluates
+`DETERMINISTIC_SAFETY` against empty vitals, since nothing supplies real ones yet.
 
 ## Provider abstraction
 
@@ -159,12 +163,12 @@ retrieved and traced to its source."
 and `safety_flags` stay empty until Phase 9/7 exist); `reasoner.py:generate_assessment()` sends
 it to the LLM and returns a validated `Assessment` (`output_schema`, verbatim field set).
 
-- **Internal capability only — no API endpoint, by deliberate scoping decision.**
-  `architecture.bypass_forbidden` requires output to pass through `safety_engine` (Phase 7) and
-  `output_validator` (Phase 8) before reaching a user; neither exists yet, so exposing this via
-  `/assessment` now would create exactly the bypass the spec prohibits. `generate_assessment()`
-  is called directly by tests and the live-verification script referenced below — Phase 12
-  ("complete pipeline") is where this gets chained together with the gates that don't exist yet.
+- **Not directly reachable from the API — `POST /assessment` is the only caller allowed to
+  treat its output as user-facing, and only via `get_validated_output()` (Phase 8), never this
+  function alone.** At the time this was written, `safety_engine` (Phase 7) and
+  `output_validator` (Phase 8) didn't exist yet, so `architecture.bypass_forbidden` meant no
+  endpoint could safely call this; both now exist, and `POST /assessment` (`app/api/
+  assessment.py`) chains them together — see "The assessment endpoint" below.
 - **Prompting** (`clinical_reasoner.prompting.receives`): `system_policy` (`reasoner.py`'s
   `_SYSTEM_POLICY` — role, `must`/`must_not` list from the spec, uncertainty-language
   requirements, and an explicit instruction that `patient_state` content — including anything
@@ -207,11 +211,10 @@ retrieved evidence."
 (`medication_safety.pipeline`, openFDA-backed), `engine.py` (`evaluate_safety` — aggregates
 both into one `PASS`/`MODIFY`/`BLOCK`/`ESCALATE` decision and logs to `safety_events`).
 
-- **Internal capability only — same scoping as Phase 6, and for the same reason.** No API
-  endpoint. `architecture.bypass_forbidden` lists `safety_engine` explicitly as never to be
-  bypassed; there's nothing yet downstream of it (`output_validator`, Phase 8) for an endpoint
-  to safely hand a decision to. `evaluate_safety()` and `check_candidate_medication()` are
-  called directly (tests, and the live-verification script referenced below).
+- **Not directly reachable from the API.** `POST /assessment` calls `evaluate_safety()` (with
+  `vitals={}` — Phase 9 doesn't exist yet) as part of its pipeline; `check_candidate_medication()`
+  specifically is still only called from tests and the live-verification script — the endpoint
+  doesn't cross-check its own proposed medications yet, see "The assessment endpoint" below.
 - **`runs_independently_of_llm` (safety_engine.rule), literally**: `evaluate_safety()` never
   reads an `Assessment`'s own `status` field — every input is plain data (a `vitals` dict,
   a list of `MedicationCheckResult`s). An LLM that claims "normal" while `SpO2` is 86% still
@@ -258,13 +261,11 @@ vitals and no medication findings correctly returned `PASS` and logged nothing.
 `app/validation/`: `checks.py` (the 10 `output_validator.checks`, each a standalone function),
 `validator.py` (`get_validated_output` — the correction pipeline and fail-closed fallback).
 
-- **Internal capability only — no API endpoint, same reasoning as Phase 6/7's scoping.** This
-  phase closes the loop those two left open (Phase 8 is literally the gate `bypass_forbidden`
-  requires before output can reach a user), but wiring an actual `/assessment` endpoint was
-  deliberately deferred rather than assumed — flag if you want that built next.
-  `get_validated_output()` is the **only** function in this codebase intended to return an
-  Assessment fit for release; `reasoner.generate_assessment()` (Phase 6) returns unvalidated
-  output and must never be treated as user-facing on its own.
+- **`get_validated_output()` is the only function in this codebase intended to return an
+  Assessment fit for release** — `reasoner.generate_assessment()` (Phase 6) returns unvalidated
+  output and must never be treated as user-facing on its own. `POST /assessment`
+  (`app/api/assessment.py`) is now the only endpoint that calls it — see "The assessment
+  endpoint" below.
 - **The 10 checks**, mapped 1:1 to the spec's own list: `schema_compliance` (belt-and-braces
   beyond what pydantic already enforces at construction); `unsupported_claims` and
   `uncertainty_requirements` (reuse Phase 6's `check_grounding`/`check_uncertainty_language` as
@@ -301,10 +302,41 @@ originally planned, because a real failure occurred mid-run:
   response reaches the user without validation" than a clean run would have been: a real,
   unplanned external failure hit the system mid-pipeline, and the fail-closed design held.
 
+## The assessment endpoint
+
+`POST /assessment` (`app/api/assessment.py`) chains everything above together for the first
+time: `build_patient_state` (Phase 3) → `build_evidence_package` (Phase 6, itself calling Phase
+5's `retrieve_evidence`) → `evaluate_safety` (Phase 7, `vitals={}`) → `get_validated_output`
+(Phase 8). It requires an owned `conversation_id` (404 otherwise) and always returns `200` with
+an `Assessment` body — `SAFE_FALLBACK` included, since that's a legitimate `output_schema`
+response, not an error.
+
+- **Known gap, stated plainly**: this endpoint's own safety-engine call always passes
+  `vitals={}` (Phase 9 doesn't exist) and never populates `medication_findings` — there is no
+  reliable way yet to turn `Assessment.medication_information`'s free text (e.g. "consider
+  acetaminophen") into a `MedicationDBProvider.lookup()` call without guessing at a drug name.
+  `check_medication_validation` (Phase 8) still runs on every request, but with nothing to
+  compare against it is currently a no-op here specifically. Building a real extractor is
+  future work.
+- **A real operational bug was found and fixed while wiring this up**: `GeminiProvider` made no
+  explicit request timeout, so a live end-to-end test that hit Gemini's rate limit mid-request
+  hung for several minutes instead of failing fast into the retry/fallback path that was
+  already designed to handle exactly this. Fixed with a 30s timeout on every
+  `client.aio.interactions.create` call (`app/providers/llm/gemini_provider.py`) — confirmed the
+  SDK accepts the kwarg without error; not yet re-verified end-to-end against a live rate limit
+  (today's quota was already exhausted across three model ids by the time this was found — see
+  `docs/KNOWN_LIMITATIONS.md`).
+- **Verified**: 112/112 tests (4 new, covering auth, ownership, a full fakes-driven happy path
+  with a real grounded citation, and the not-configured→`SAFE_FALLBACK` path). Live: auth,
+  conversation creation, and message-sending all worked against the real running server; the
+  `/assessment` call itself reached real Gemini and correctly hit (and began retrying against)
+  the day's exhausted rate limit before the request was stopped rather than left hanging — not
+  a clean end-to-end live success, disclosed rather than glossed over.
+
 ## Not yet implemented
 
 The conversation manager's `emergency_indicators` question tier is still unpopulated (see the
 conversation manager section above) — Phase 7's vital-threshold rules exist now, but nothing
-feeds them real vitals yet, and wiring safety_engine/medication safety/the validator into the
-live conversation loop (or exposing any of it via an endpoint) is separate work Phases 6-8
-deliberately didn't do; and everything from Phase 9 (vitals/devices) onward.
+feeds them real vitals yet. Wiring safety_engine/medication safety into the *live conversation
+loop* itself (as opposed to the new dedicated endpoint) is still separate, undone work; and
+everything from Phase 9 (vitals/devices) onward.

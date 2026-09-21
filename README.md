@@ -21,20 +21,25 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 8 (Output Validator) done, as an **internal capability only** — same reasoning as Phases
-6/7 (no `/assessment` endpoint yet; that's a deliberate deferral, not an oversight). `app/
-validation/` runs the 10 spec-defined checks, retries the reasoner once with correction
-feedback on failure, and falls back to a safe response if that also fails or if anything goes
-wrong internally. Verified live in an unusually convincing way: a real run hit both a
-successfully-retried transient API error *and* a real rate limit mid-correction, and the
-fail-closed path handled both correctly — including correctly rejecting one real LLM response
-for contradicting the deterministic safety engine's escalation decision. Phases 5–7 (Medical
-Knowledge/RAG, Conversation Manager, Safety Engine & Medication Safety, Clinical Reasoning) and
-Phases 0–2 are also done. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live;
-note its free tier caps at 20 requests/day **per model id** — `GEMINI_MODEL` in `.env` lets you
-switch to a fresh quota if you hit it. See `docs/KNOWN_LIMITATIONS.md` for the current,
-up-to-date status and open decisions, `docs/AI_PIPELINE.md` for how the pieces fit together,
-and `mobile/README.md` for mobile-specific gaps.
+`POST /assessment` is now live — the first endpoint in the codebase allowed to return
+clinical-shaped output, chaining patient state, evidence retrieval, clinical reasoning, the
+deterministic safety engine, and the output validator (Phases 3, 5, 6, 7, 8) into one gated
+pipeline. It always returns `200` with a valid `Assessment` body, falling back to a safe
+"insufficient information" response rather than an error whenever anything fails a check or
+goes wrong internally. Known gaps: vitals are always empty (Phase 9 doesn't exist yet) and the
+endpoint doesn't yet cross-check its own proposed medications against medication safety (no
+reliable way yet to extract a drug name from free text). A real bug was found and fixed while
+wiring this up — `GeminiProvider` had no request timeout, so a rate-limited call could hang for
+minutes; that's now bounded at 30s, though not yet re-verified against a live rate limit (see
+below). Phases 0–8 (Foundation through Output Validator) are all done — see
+`docs/KNOWN_LIMITATIONS.md` for the up-to-date phase-by-phase status.
+
+LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live across most phases; its free
+tier caps at 20 requests/day **per model id**, and today's testing has exhausted three separate
+model ids (`gemini-3.8-flash`, `gemini-3.6-flash`, and `gemini-2.5-flash` — the last of which
+turned out to be deprecated anyway). `GEMINI_MODEL` in `.env` lets you switch to a fresh quota,
+or wait for the daily reset. See `docs/AI_PIPELINE.md` for how the pieces fit together and
+`mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 

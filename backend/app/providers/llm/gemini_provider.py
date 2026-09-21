@@ -5,6 +5,13 @@ from google import genai
 from app.core.config import settings
 from app.providers.llm.base import LLMNotConfiguredError, LLMProvider, T
 
+# Observed live (Phase 8/assessment-endpoint testing): with no timeout, a rate-limited call can
+# hang far longer than the "retry in Ns" the API itself reports — the SDK doesn't fail fast on
+# its own. A bounded timeout ensures a stuck call surfaces as a real exception (which
+# generate_assessment/get_validated_output already handle via retry + fail-closed) instead of
+# hanging the whole request.
+_REQUEST_TIMEOUT_SECONDS = 30.0
+
 
 class GeminiProvider(LLMProvider):
     """Concrete LLMProvider choice: Google Gemini, via the official `google-genai` SDK
@@ -28,7 +35,7 @@ class GeminiProvider(LLMProvider):
     async def generate(self, prompt: str, *, system: str | None = None) -> str:
         client = self._require_client()
         interaction = await client.aio.interactions.create(
-            model=self._model, input=prompt, system_instruction=system
+            model=self._model, input=prompt, system_instruction=system, timeout=_REQUEST_TIMEOUT_SECONDS
         )
         return interaction.output_text or ""
 
@@ -39,13 +46,14 @@ class GeminiProvider(LLMProvider):
             input=prompt,
             system_instruction=system,
             response_format={"type": "text", "mime_type": "application/json", "schema_": schema.model_json_schema()},
+            timeout=_REQUEST_TIMEOUT_SECONDS,
         )
         return schema.model_validate_json(interaction.output_text)
 
     async def stream(self, prompt: str, *, system: str | None = None) -> AsyncIterator[str]:
         client = self._require_client()
         response_stream = await client.aio.interactions.create(
-            model=self._model, input=prompt, system_instruction=system, stream=True
+            model=self._model, input=prompt, system_instruction=system, stream=True, timeout=_REQUEST_TIMEOUT_SECONDS
         )
         async for event in response_stream:
             if event.event_type == "step.delta" and getattr(event.delta, "type", None) == "text":
