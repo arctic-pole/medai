@@ -1,6 +1,6 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This is the Phase 5 state.
+> Filled in incrementally as each AI-related phase lands. This is the Phase 6 state.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -13,9 +13,9 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
 symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) ...
-`EVIDENCE_RETRIEVAL` (Phase 5, this doc — not yet wired into the conversation loop itself, see
-below). `VITAL/HEALTH_DATA` and everything from `CLINICAL_REASONING` onward are later phases
-(6, 9–11).
+`EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6, this doc — internal capability
+only, not wired into the conversation loop or exposed via any endpoint, see below).
+`VITAL/HEALTH_DATA` and everything from `DETERMINISTIC_SAFETY` onward are later phases (7–11).
 
 ## Provider abstraction
 
@@ -148,7 +148,57 @@ relevant passage first (similarity 0.75), with full source attribution. This dir
 demonstrates the Phase 5 pass criterion: "Given a clinical topic, relevant evidence can be
 retrieved and traced to its source."
 
+## Clinical reasoning (Phase 6)
+
+`app/reasoning/`: `evidence_package.py` assembles `evidence_package.schema` (patient_state +
+`relevant_history` + `retrieved_evidence`, scoped to the patient's own symptoms — `relevant_vitals`
+and `safety_flags` stay empty until Phase 9/7 exist); `reasoner.py:generate_assessment()` sends
+it to the LLM and returns a validated `Assessment` (`output_schema`, verbatim field set).
+
+- **Internal capability only — no API endpoint, by deliberate scoping decision.**
+  `architecture.bypass_forbidden` requires output to pass through `safety_engine` (Phase 7) and
+  `output_validator` (Phase 8) before reaching a user; neither exists yet, so exposing this via
+  `/assessment` now would create exactly the bypass the spec prohibits. `generate_assessment()`
+  is called directly by tests and the live-verification script referenced below — Phase 12
+  ("complete pipeline") is where this gets chained together with the gates that don't exist yet.
+- **Prompting** (`clinical_reasoner.prompting.receives`): `system_policy` (`reasoner.py`'s
+  `_SYSTEM_POLICY` — role, `must`/`must_not` list from the spec, uncertainty-language
+  requirements, and an explicit instruction that `patient_state` content — including anything
+  originally said by the patient — is data, not instructions); `task` + `patient_state` +
+  `evidence` + `safety_flags` (serialized into the prompt by `_serialize_task`); `output_schema`
+  (enforced by requesting `structured_generate` against the `Assessment` schema directly, rather
+  than restating it as prompt text). Nothing here comes from raw request/session objects
+  (`must_not_receive: uncontrolled_application_state`).
+- **Defense-in-depth checks** (`app/reasoning/checks.py`) — ahead of Phase 8's real
+  `output_validator`, not a replacement for it:
+  - `check_grounding`: every `EvidenceReference.source_id` the model cites must actually be one
+    of the `retrieved_evidence` items it was given — catches invented evidence in code, not by
+    trusting the model's own citation text (`clinical_reasoner.must_not:
+    invent_evidence_or_medication_info`).
+  - `check_uncertainty_language`: rejects a short list of unqualified absolute-certainty phrases
+    (`uncertainty_language.forbidden`).
+  - A failed check — or a malformed/schema-invalid response — triggers one retry
+    (`generate_assessment`'s `max_attempts`, default 2) before raising; nothing that fails both
+    attempts is ever returned.
+- **Not persisted.** `medai_spec.yaml database.tables` lists `recommendations` and
+  `recommendation_evidence`, but Phase 6 doesn't write to them: an `Assessment` here hasn't been
+  through `safety_engine`/`output_validator` yet, so persisting it to a table named
+  "recommendations" would misrepresent it as a vetted output. Deferred to whichever phase first
+  produces a validated, releasable result.
+
+**Verified live**, not just against fakes: a real evidence package (1 symptom — a throbbing,
+right-sided headache, severity 7, triggered by bright light, onset "yesterday afternoon" — plus
+5 retrieved MedlinePlus passages) sent to the real Gemini API produced a schema-valid
+`Assessment` — `status: "caution"`, hedged summary ("Based on the available information..."),
+accurate `known_information`, a thorough `unknown_information` list (age, sex, vitals, red-flag
+symptoms, history, medications, allergies), an appropriate general red-flag `warnings` entry,
+`confidence: "low"`, and two `evidence` citations whose `source_id`s were real, retrieved
+MedlinePlus articles — passing both defense-in-depth checks on the first attempt. This directly
+demonstrates the Phase 6 pass criterion: "Model produces schema-valid reasoning grounded in
+retrieved evidence."
+
 ## Not yet implemented
 
-The full `clinical_reasoner` (Phase 6) and everything downstream of it — including real
-emergency detection and vital-based questions (see the conversation manager section above).
+`safety_engine` (Phase 7), `medication_safety` (Phase 7), `output_validator` (Phase 8), real
+emergency detection and vital-based questions (see the conversation manager section above), and
+everything from Phase 9 (vitals/devices) onward.

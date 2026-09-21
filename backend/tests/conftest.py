@@ -2,6 +2,12 @@ import os
 
 os.environ.setdefault("DATABASE_URL", "postgresql+asyncpg://medai:medai@localhost:5432/medai_test")
 
+# Tests must be hermetic: never make a real call to a paid/rate-limited external LLM, even if
+# the developer's local .env has a real key in it. Force these blank for the test process
+# regardless of .env content — tests that want LLM behavior use a Fake*LLMProvider instead.
+os.environ["GEMINI_API_KEY"] = ""
+os.environ["OPENAI_API_KEY"] = ""
+
 import pytest_asyncio
 from httpx import ASGITransport, AsyncClient
 from sqlalchemy import text

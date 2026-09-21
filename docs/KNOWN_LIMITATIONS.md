@@ -33,7 +33,33 @@
   - WHO pulse oximetry manual: https://www.who.int/publications/i/item/9789241501132
   - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm
 
-## Current phase: 5 — Medical Knowledge (RAG); LLM now live-verified
+## Current phase: 6 — Clinical Reasoning (internal capability only)
+
+- **Scoping decision (confirmed with the user before building):** `app/reasoning/` has no API
+  endpoint. `architecture.bypass_forbidden` requires output to pass through `safety_engine`
+  (Phase 7) and `output_validator` (Phase 8) before reaching a user; neither exists yet, so an
+  `/assessment` endpoint now would bypass exactly what the spec prohibits. `generate_assessment()`
+  is callable directly (used by tests and a live-verification script) but not reachable over
+  HTTP. Also not persisted to the `recommendations`/`recommendation_evidence` tables
+  `medai_spec.yaml database.tables` names — an unvalidated `Assessment` isn't a vetted
+  recommendation yet. See `docs/AI_PIPELINE.md` for the full design.
+- **Verified live against the real Gemini API**, not just fakes: a real evidence package (one
+  symptom, five retrieved MedlinePlus passages) produced a schema-valid `Assessment` with
+  accurate known/unknown information, an appropriate general red-flag warning, `confidence:
+  "low"`, and two evidence citations whose `source_id`s were genuinely in the evidence it was
+  given — passing both defense-in-depth checks (grounding + forbidden-language) on the first
+  attempt. Exact output logged in `docs/AI_PIPELINE.md`.
+- **Test-hermeticity bug found and fixed while doing this**: once `GEMINI_API_KEY` was set in
+  the real `.env`, the backend's test suite started making real (slow, non-deterministic) calls
+  to the live Gemini API for any test that didn't explicitly override the LLM provider —
+  because `Settings` (correctly, per the earlier fix) now actually loads that key. Tests must
+  never depend on a real external credential; `backend/tests/conftest.py` now force-blanks
+  `GEMINI_API_KEY`/`OPENAI_API_KEY` for the test process regardless of what's in `.env`.
+- `emergency_indicators`/`required_measurements` question tiers, `safety_engine`,
+  `medication_safety`, and `output_validator` all still don't exist (Phase 7/8) — nothing in
+  Phase 6 invents sourced safety rules or thresholds in their place.
+
+## Phase 5 — Medical Knowledge (RAG)
 
 - **`GEMINI_API_KEY` is now set and verified against the real API**, closing the last gap from
   Phase 3/4:

@@ -21,16 +21,16 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 5 (Medical Knowledge / RAG) done: `POST /evidence/ingest` pulls real content from
-MedlinePlus, chunks and embeds it (self-hosted `BAAI/bge-large-en-v1.5`), and stores it in
-Postgres/pgvector; `GET /evidence?query=` retrieves it back, ranked and traceable to its source
-— verified live with real data (see `docs/AI_PIPELINE.md`). Phase 4 (Conversation Manager) also
-done: `POST /messages` conducts a structured interview, working with or without an LLM
-configured. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`) — **now configured and verified
-live**: Phase 3 extraction and Phase 4's natural question phrasing both confirmed against the
-real API (see `docs/KNOWN_LIMITATIONS.md` for the example). Phases 0–2 (Foundation, Patient
-Data, Conversation) are also done. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date
-status and open decisions, and `mobile/README.md` for mobile-specific gaps.
+Phase 6 (Clinical Reasoning) done, as an **internal capability only** — `app/reasoning/` takes
+an evidence package (patient state + retrieved evidence) and produces a schema-valid, grounded
+`Assessment` via Gemini, verified live. It is deliberately **not** exposed via any API endpoint
+yet: `safety_engine` (Phase 7) and `output_validator` (Phase 8) don't exist, and the spec
+requires both to gate any output before it reaches a user. Phase 5 (Medical Knowledge / RAG),
+Phase 4 (Conversation Manager), and Phases 0–2 (Foundation, Patient Data, Conversation) are also
+done. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`) — configured and verified live across
+Phases 3, 4, and 6. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open
+decisions, `docs/AI_PIPELINE.md` for how the pieces fit together, and `mobile/README.md` for
+mobile-specific gaps.
 
 ## Backend — local development
 

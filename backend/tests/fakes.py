@@ -1,11 +1,19 @@
 import hashlib
 import math
+import uuid
 from collections.abc import AsyncIterator
 
-from app.patient_state.schema import ExtractedSymptom, SymptomExtractionResult
+from app.patient_state.schema import ExtractedSymptom, PatientState, PatientStateIdentity, SymptomExtractionResult
 from app.providers.embeddings.base import EmbeddingProvider
 from app.providers.llm.base import LLMNotConfiguredError, LLMProvider, T
 from app.providers.medical_knowledge.base import MedicalKnowledgeProvider, RawDocument
+from app.reasoning.schema import Assessment
+
+
+def empty_patient_state(**overrides) -> PatientState:
+    base = dict(patient=PatientStateIdentity(id=uuid.uuid4()), unknowns=[])
+    base.update(overrides)
+    return PatientState(**base)
 
 
 class FakeLLMProvider(LLMProvider):
@@ -89,3 +97,27 @@ class FakeMedicalKnowledgeProvider(MedicalKnowledgeProvider):
 
     async def fetch(self, topic: str) -> list[RawDocument]:
         return self._documents
+
+
+class FakeReasoningLLMProvider(LLMProvider):
+    """Returns a queue of canned Assessment objects, one per call to structured_generate — lets
+    a test simulate a first bad attempt (e.g. ungrounded evidence) followed by a good one, to
+    exercise app/reasoning/reasoner.py's retry path without a real model."""
+
+    def __init__(self, assessments: list[Assessment]) -> None:
+        self._assessments = list(assessments)
+        self.call_count = 0
+
+    async def generate(self, prompt: str, *, system: str | None = None) -> str:
+        return "fake response"
+
+    async def structured_generate(self, prompt: str, schema: type[T], *, system: str | None = None) -> T:
+        self.call_count += 1
+        if schema is not Assessment:
+            raise NotImplementedError(f"FakeReasoningLLMProvider has no canned response for {schema}")
+        if not self._assessments:
+            raise RuntimeError("FakeReasoningLLMProvider ran out of canned assessments")
+        return self._assessments.pop(0)  # type: ignore[return-value]
+
+    async def stream(self, prompt: str, *, system: str | None = None) -> AsyncIterator[str]:
+        yield "fake"

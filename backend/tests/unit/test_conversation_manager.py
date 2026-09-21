@@ -1,5 +1,3 @@
-import uuid
-
 import pytest
 
 from app.conversation.manager import (
@@ -9,14 +7,8 @@ from app.conversation.manager import (
     validate_action,
 )
 from app.conversation.missing_info import identify_missing_info
-from app.patient_state.schema import ExtractedSymptom, PatientState, PatientStateIdentity
-from tests.fakes import FakeLLMProvider, NotConfiguredLLMProvider
-
-
-def _empty_state(**overrides) -> PatientState:
-    base = dict(patient=PatientStateIdentity(id=uuid.uuid4()), unknowns=[])
-    base.update(overrides)
-    return PatientState(**base)
+from app.patient_state.schema import ExtractedSymptom
+from tests.fakes import FakeLLMProvider, NotConfiguredLLMProvider, empty_patient_state as _empty_state
 
 
 def test_missing_info_priority_order_puts_high_impact_before_lower_priority() -> None:
