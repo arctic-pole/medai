@@ -1,4 +1,12 @@
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Repo-root .env (shared with docker-compose.yml's own variable substitution — see
+# docs/DATABASE.md). Resolved relative to this file, not the process's cwd: pydantic-settings'
+# default `env_file=".env"` is cwd-relative, which silently found nothing when the app was run
+# from backend/ (the documented way to run it) while .env lived one level up at the repo root.
+_REPO_ROOT_ENV_FILE = Path(__file__).resolve().parents[3] / ".env"
 
 
 class Settings(BaseSettings):
@@ -8,7 +16,9 @@ class Settings(BaseSettings):
     environment_variables_for_credentials. Never hard-code credentials here.
     """
 
-    model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
+    model_config = SettingsConfigDict(
+        env_file=_REPO_ROOT_ENV_FILE, env_file_encoding="utf-8", extra="ignore"
+    )
 
     environment: str = "development"
     log_level: str = "INFO"
