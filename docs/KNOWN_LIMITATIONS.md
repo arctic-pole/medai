@@ -5,6 +5,12 @@
 
 ## Provider/source decisions (user-supplied, with references)
 
+- **LLM** (Phase 3, done; provider changed after Phase 5): **Gemini**, via the official
+  `google-genai` SDK's async Interactions API (`client.aio.interactions.create`) —
+  https://ai.google.dev/gemini-api/docs. Originally OpenAI (kept as a second working
+  `LLMProvider` implementation, see `app/providers/llm/openai_provider.py`, but no longer
+  selected). Model: `gemini-3.8-flash` (`GEMINI_MODEL` env var). No key supplied yet — fails
+  closed, verified live.
 - **STT** (Phase 2, done): `speech_to_text` (pub.dev) — https://pub.dev/packages/speech_to_text
 - **TTS** (Phase 11, not yet built): `flutter_tts` (pub.dev) — https://pub.dev/packages/flutter_tts
 - **Embeddings** (Phase 5, done): `BAAI/bge-large-en-v1.5` via `sentence-transformers`,
@@ -49,8 +55,12 @@
   configured. `emergency_indicators` and `required_measurements` question tiers are still not
   populated (need Phase 7/9). Mobile doesn't call `/symptoms/extract`, so the
   `high_impact_missing_information` tier never triggers in the live mobile flow yet.
-- **LLM provider decided (OpenAI) but still no API key supplied.** Symptom extraction
-  (`POST /symptoms/extract`) still fails closed with `LLM_ERROR`.
+- **LLM provider switched to Gemini; still no API key supplied.** Symptom extraction
+  (`POST /symptoms/extract`) still fails closed with `LLM_ERROR`. Also fixed a real bug found
+  while wiring this up: `Settings`' `.env` loader was resolving `.env` relative to the process's
+  working directory, which silently never found the repo-root `.env` when the app is run from
+  `backend/` (the documented way) — it's now resolved relative to `config.py`'s own location
+  instead, so `.env` at the repo root actually loads regardless of cwd.
 - Mobile's auth is still a **device-bootstrapped placeholder** (no real login/consent screen —
   Phase 1 mobile work). See `mobile/README.md`.
 - Dev-only CORS (`allow_origins=["*"]`) on the backend — must be locked down before any real

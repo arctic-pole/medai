@@ -35,9 +35,15 @@ class Settings(BaseSettings):
     # Generate a real one with: from cryptography.fernet import Fernet; Fernet.generate_key()
     field_encryption_key: str = "kgcgyGwg_TOkwTOdpCClu340NKpRIVU15x2EeNDDtqg="
 
-    # LLMProvider (architecture.provider_interfaces) — concrete choice: OpenAI. Empty key means
-    # "not configured"; app/providers/llm/openai_provider.py fails closed (LLMNotConfiguredError)
-    # rather than fabricating a response. See docs/KNOWN_LIMITATIONS.md.
+    # LLMProvider (architecture.provider_interfaces) — active concrete choice: Gemini. Empty
+    # key means "not configured"; app/providers/llm/gemini_provider.py fails closed
+    # (LLMNotConfiguredError) rather than fabricating a response. See docs/KNOWN_LIMITATIONS.md.
+    gemini_api_key: str = ""
+    gemini_model: str = "gemini-3.8-flash"
+
+    # OpenAIProvider (app/providers/llm/openai_provider.py) is kept as a second working
+    # LLMProvider implementation but is not selected by get_llm_provider() — these are unused
+    # unless that's changed back.
     openai_api_key: str = ""
     openai_model: str = "gpt-4o-mini"
 

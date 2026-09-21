@@ -20,20 +20,29 @@ below). `VITAL/HEALTH_DATA` and everything from `CLINICAL_REASONING` onward are 
 ## Provider abstraction
 
 `app/providers/llm/base.py` defines `LLMProvider` (`generate`, `structured_generate`, `stream`)
-per `architecture.provider_interfaces`. The only concrete implementation is
-`app/providers/llm/openai_provider.py` (`OpenAIProvider`) — **decided by the user in Phase 3**,
-not fabricated. It is selected in exactly one place: `app/providers/llm/get_llm_provider()`
-(`app/providers/llm/__init__.py`); swapping providers means writing a new `LLMProvider`
-subclass and changing that one function.
+per `architecture.provider_interfaces`. **Active concrete implementation:**
+`app/providers/llm/gemini_provider.py` (`GeminiProvider`), via the official `google-genai` SDK's
+async Interactions API (`client.aio.interactions.create`) — **decided by the user**, originally
+OpenAI in Phase 3, switched to Gemini afterward. The SDK's actual method/field names
+(`system_instruction`, `response_format={"type": "text", "mime_type": "application/json",
+"schema_": ...}`, `interaction.output_text`, streaming via `event_type == "step.delta"`) were
+verified against the live docs and the installed package's own type definitions before writing
+the provider, not assumed from training data.
 
-`OpenAIProvider` fails closed: with no `OPENAI_API_KEY` configured, every method raises
+`app/providers/llm/openai_provider.py` (`OpenAIProvider`) is kept as a second, still-working
+`LLMProvider` implementation — unused, but proof the provider is genuinely swappable. Exactly
+one place selects the active one: `get_llm_provider()` in `app/providers/llm/__init__.py`;
+swapping providers means writing a new `LLMProvider` subclass and changing that one function.
+
+`GeminiProvider` fails closed: with no `GEMINI_API_KEY` configured, every method raises
 `LLMNotConfiguredError` rather than returning a fabricated response
-(`error_handling.fail_closed_principle`). As of this writing no key has been supplied, so
-extraction is implemented and tested (against a `FakeLLMProvider`, see `backend/tests/fakes.py`)
-but has not been exercised against the real OpenAI API — see `docs/KNOWN_LIMITATIONS.md`.
+(`error_handling.fail_closed_principle`) — verified live. As of this writing no key has been
+supplied, so extraction is implemented and tested (against a `FakeLLMProvider`, see
+`backend/tests/fakes.py`) but has not been exercised against the real Gemini API — see
+`docs/KNOWN_LIMITATIONS.md`.
 
-Model: `gpt-4o-mini` by default (`OPENAI_MODEL` env var) — chosen for structured-output support
-at reasonable cost for a prototype; change it any time via `.env`, no code change needed.
+Model: `gemini-3.8-flash` by default (`GEMINI_MODEL` env var) — the current model at the time
+this was wired in; change it any time via `.env`, no code change needed.
 
 ## Symptom extraction (Phase 3)
 
@@ -43,9 +52,10 @@ at reasonable cost for a prototype; change it any time via `.env`, no code chang
   suggest a cause, condition, or treatment (this endpoint performs *extraction*, not reasoning,
   per `phases.2_conversation.constraint` carrying into Phase 3).
 - **Output**: `SymptomExtractionResult` (a Pydantic model wrapping `list[ExtractedSymptom]`),
-  requested via `structured_generate` (OpenAI's structured-outputs / `.chat.completions.parse`,
-  which validates the model's JSON against the Pydantic schema before it's ever used) —
-  satisfies `clinical_reasoner.prompting.rule`: "use structured output wherever supported."
+  requested via `structured_generate` — `GeminiProvider` asks for a JSON-schema-constrained
+  response (`response_format`) and validates the returned JSON against the Pydantic schema
+  before it's ever used — satisfies `clinical_reasoner.prompting.rule`: "use structured output
+  wherever supported."
 - **Storage**: one `Symptom` row per extracted item (`backend/app/db/models.py`), linked to the
   source `conversation_id`, free-text fields encrypted at rest.
 - **Assembly**: `app/patient_state/assembler.py:build_patient_state()` composes the full
@@ -73,8 +83,8 @@ Phase 2's echo scaffold, exactly as that scaffold's own docstring said it would.
 - **Deterministic by design, not LLM-driven.** `identify_missing_info` and `select_action` never
   call an LLM — they inspect `PatientState` (itself built only from DB rows) and apply
   `conversation_manager.question_priority` in a fixed order. This means the interview works
-  fully even with `OPENAI_API_KEY` unset (as it currently is) — a deliberate choice given Phase
-  3's provider isn't wired to a real key yet, not a spec requirement. The LLM is used, when
+  fully even with `GEMINI_API_KEY` unset (as it currently is) — a deliberate choice given the
+  LLM provider isn't wired to a real key yet, not a spec requirement. The LLM is used, when
   configured, only for *phrasing* the chosen question more naturally
   (`manager.py:_phrase_question`) — a best-effort NLG step with a deterministic template
   fallback on any failure, never the decision itself.

@@ -15,6 +15,10 @@ dependencies = [
     "pyjwt>=2.9",
     "python-multipart>=0.0.12",
     "cryptography>=43",
+    # LLMProvider active choice: Gemini (app/providers/llm/gemini_provider.py).
+    "google-genai>=2.0",
+    # OpenAIProvider is a second working LLMProvider implementation, kept but not selected —
+    # see app/providers/llm/__init__.py.
     "openai>=1.50",
     # EmbeddingProvider concrete choice: BAAI/bge-large-en-v1.5, self-hosted, no API key.
     # Install CPU-only torch FIRST (see README) to avoid pulling a multi-GB CUDA wheel:
