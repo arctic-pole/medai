@@ -7,6 +7,7 @@ from app.patient_state.schema import ExtractedSymptom, PatientState, PatientStat
 from app.providers.embeddings.base import EmbeddingProvider
 from app.providers.llm.base import LLMNotConfiguredError, LLMProvider, T
 from app.providers.medical_knowledge.base import MedicalKnowledgeProvider, RawDocument
+from app.providers.medication_db.base import DrugLabel, MedicationDBProvider
 from app.reasoning.schema import Assessment
 
 
@@ -121,3 +122,15 @@ class FakeReasoningLLMProvider(LLMProvider):
 
     async def stream(self, prompt: str, *, system: str | None = None) -> AsyncIterator[str]:
         yield "fake"
+
+
+class FakeMedicationDBProvider(MedicationDBProvider):
+    """A deterministic stand-in for OpenFDAProvider — no real network call. Register labels by
+    (lowercased) name via the constructor; lookup() is case-insensitive against generic_name,
+    brand_names, and the name it was registered under."""
+
+    def __init__(self, labels: dict[str, DrugLabel] | None = None) -> None:
+        self._labels = {k.lower(): v for k, v in (labels or {}).items()}
+
+    async def lookup(self, drug_name: str) -> DrugLabel | None:
+        return self._labels.get(drug_name.lower())

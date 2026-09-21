@@ -239,6 +239,22 @@ class KnowledgeChunk(Base):
     source: Mapped["ClinicalSource"] = relationship(back_populates="chunks")
 
 
+class SafetyEvent(Base):
+    """Phase 7: one row per non-PASS safety_engine decision, per
+    "safety_events... log every BLOCK/ESCALATE/MODIFY with rule_id and version." PASS is never
+    logged here — only when a rule actually fires."""
+
+    __tablename__ = "safety_events"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
+    rule_id: Mapped[str] = mapped_column(String, nullable=False)
+    rule_version: Mapped[str] = mapped_column(String, nullable=False)
+    decision: Mapped[str] = mapped_column(String, nullable=False)  # MODIFY | BLOCK | ESCALATE
+    detail: Mapped[str] = mapped_column(Text, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
 class AuditLog(Base):
     """Only fields in security.logging.allowed are ever written here — see app/audit/middleware.py."""
 

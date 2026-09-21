@@ -21,15 +21,18 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 6 (Clinical Reasoning) done, as an **internal capability only** — `app/reasoning/` takes
-an evidence package (patient state + retrieved evidence) and produces a schema-valid, grounded
-`Assessment` via Gemini, verified live. It is deliberately **not** exposed via any API endpoint
-yet: `safety_engine` (Phase 7) and `output_validator` (Phase 8) don't exist, and the spec
-requires both to gate any output before it reaches a user. Phase 5 (Medical Knowledge / RAG),
-Phase 4 (Conversation Manager), and Phases 0–2 (Foundation, Patient Data, Conversation) are also
-done. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`) — configured and verified live across
-Phases 3, 4, and 6. See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open
-decisions, `docs/AI_PIPELINE.md` for how the pieces fit together, and `mobile/README.md` for
+Phase 7 (Safety Engine & Medication Safety) done, as an **internal capability only** (same
+reasoning as Phase 6 below — `output_validator`, Phase 8, doesn't exist yet to gate output for
+real users). `app/safety/` deterministically decides `PASS`/`MODIFY`/`BLOCK`/`ESCALATE` from
+sourced vital-sign thresholds (AHA/WHO/MedlinePlus) and a real openFDA-backed medication safety
+pipeline — verified live: real drug lookups correctly blocked an allergen, flagged a real
+interaction + boxed warning for review, and allowed a clean medication; combined with abnormal
+vitals it correctly escalated and logged to `safety_events`. Phase 6 (Clinical Reasoning) is
+also internal-only — `app/reasoning/` produces a schema-valid, grounded `Assessment` via
+Gemini, verified live. Phase 5 (Medical Knowledge / RAG), Phase 4 (Conversation Manager), and
+Phases 0–2 are also done. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live.
+See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open decisions,
+`docs/AI_PIPELINE.md` for how the pieces fit together, and `mobile/README.md` for
 mobile-specific gaps.
 
 ## Backend — local development

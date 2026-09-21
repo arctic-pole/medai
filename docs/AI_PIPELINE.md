@@ -1,6 +1,6 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This is the Phase 6 state.
+> Filled in incrementally as each AI-related phase lands. This is the Phase 7 state.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -13,9 +13,10 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
 symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) ...
-`EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6, this doc — internal capability
-only, not wired into the conversation loop or exposed via any endpoint, see below).
-`VITAL/HEALTH_DATA` and everything from `DETERMINISTIC_SAFETY` onward are later phases (7–11).
+`EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` +
+`MEDICATION_SAFETY` (Phase 7, this doc). All of Phase 6/7 are internal capabilities only — not
+wired into the conversation loop or exposed via any endpoint, see below. `VITAL/HEALTH_DATA`
+(Phase 9) and `OUTPUT_VALIDATION` (Phase 8) onward are still later phases.
 
 ## Provider abstraction
 
@@ -197,8 +198,62 @@ MedlinePlus articles — passing both defense-in-depth checks on the first attem
 demonstrates the Phase 6 pass criterion: "Model produces schema-valid reasoning grounded in
 retrieved evidence."
 
+## Deterministic safety engine & medication safety (Phase 7)
+
+`app/safety/`: `vital_rules.py` (sourced vital-sign thresholds), `medication.py`
+(`medication_safety.pipeline`, openFDA-backed), `engine.py` (`evaluate_safety` — aggregates
+both into one `PASS`/`MODIFY`/`BLOCK`/`ESCALATE` decision and logs to `safety_events`).
+
+- **Internal capability only — same scoping as Phase 6, and for the same reason.** No API
+  endpoint. `architecture.bypass_forbidden` lists `safety_engine` explicitly as never to be
+  bypassed; there's nothing yet downstream of it (`output_validator`, Phase 8) for an endpoint
+  to safely hand a decision to. `evaluate_safety()` and `check_candidate_medication()` are
+  called directly (tests, and the live-verification script referenced below).
+- **`runs_independently_of_llm` (safety_engine.rule), literally**: `evaluate_safety()` never
+  reads an `Assessment`'s own `status` field — every input is plain data (a `vitals` dict,
+  a list of `MedicationCheckResult`s). An LLM that claims "normal" while `SpO2` is 86% still
+  gets `ESCALATE`, because the LLM's opinion is never consulted.
+- **Vital thresholds — every one sourced, none invented** (`app/safety/vital_rules.py`):
+  heart rate and blood pressure from the AHA pages the user supplied (those pages block
+  automated fetches — HTTP 403 — so the standard AHA/ACC figures were corroborated via a
+  direct fetch of Cleveland Clinic's heart-rate page and cross-checked against other reputable
+  clinical sources citing the same AHA/ACC guideline; disclosed, not glossed over); SpO2 and
+  body temperature from direct primary-source fetches (the WHO pulse-oximetry manual PDF and
+  the MedlinePlus body-temperature page), with the exact quoted thresholds in the module's
+  docstring. Where a source gave no explicit number (e.g. no stated heart-rate "emergency"
+  cutoff distinct from tachycardia itself; MedlinePlus states no dangerous-fever or
+  hypothermia threshold), **no rule exists for it** — nothing was invented to fill the gap.
+- **No `safety_rules` DB table** — see `docs/DATABASE.md` for why; rules are a version-controlled
+  Python list, not admin-editable data.
+- **Medication safety** (`app/safety/medication.py`): implements
+  `medication_safety.pipeline`'s exact step order, backed by real openFDA drug-label lookups
+  (`app/providers/medication_db/openfda_provider.py`, user decision). Allergy and
+  contraindication matches → `BLOCKED`; drug-interaction text matches, duplicate therapy,
+  boxed warnings, and (heuristically) pediatric-use concerns → `REQUIRES_REVIEW`; nothing
+  found → `ALLOWED`. This is **literal substring text-matching against label prose**, not a
+  structured interaction graph (openFDA's label endpoint doesn't expose one) — documented
+  limitation, found empirically while writing tests: it correctly blocks "penicillin" for a
+  "penicillin" allergy, but does **not** catch a drug-class allergy (e.g. "amoxicillin" against
+  a "penicillin" allergy — the words share no substring) or a word-form mismatch (a condition
+  recorded as "pregnancy" won't match label text saying "pregnant"). A match is always
+  `BLOCKED`/`REQUIRES_REVIEW`, never a silently-reassuring `ALLOWED`, but a false negative from
+  this limitation is still possible. `dosage_validity` (`medication_safety.checks`) is not
+  implemented — a candidate here is a drug name only, no proposed dose to validate against.
+
+**Verified live**, not just against fakes: three real openFDA lookups against a real patient —
+`penicillin` (patient has a recorded penicillin allergy) → `BLOCKED`; `warfarin` (patient takes
+aspirin) → `REQUIRES_REVIEW`, correctly citing both the real drug-interactions text mentioning
+aspirin *and* warfarin's real FDA boxed warning; `acetaminophen` → `ALLOWED`. Then
+`evaluate_safety()` with real vitals (SpO2 86%, heart rate 118 bpm) plus those three findings
+correctly triggered both `VITAL_SPO2_EMERGENCY_001` and `VITAL_HR_HIGH_001`, decided
+`ESCALATE` (the emergency-tier vital rule outranks the blocked medication), and logged 4 rows
+to `safety_events` (verified by querying the dev DB directly) — while a second call with normal
+vitals and no medication findings correctly returned `PASS` and logged nothing.
+
 ## Not yet implemented
 
-`safety_engine` (Phase 7), `medication_safety` (Phase 7), `output_validator` (Phase 8), real
-emergency detection and vital-based questions (see the conversation manager section above), and
-everything from Phase 9 (vitals/devices) onward.
+`output_validator` (Phase 8); the conversation manager's `emergency_indicators` question tier
+is still unpopulated (see the conversation manager section above) — Phase 7's vital-threshold
+rules exist now, but nothing feeds them real vitals yet, and wiring safety_engine/medication
+safety into the live conversation loop is separate work Phase 6/7 deliberately didn't do (see
+"internal capability only" above); and everything from Phase 9 (vitals/devices) onward.
