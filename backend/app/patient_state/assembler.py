@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import Allergy, CurrentMedication, MedicalHistory, Patient, PatientProfile, Symptom
+from app.db.models import Allergy, CurrentMedication, MedicalHistory, Patient, PatientProfile, Symptom, Vital
 from app.patient_state.schema import ExtractedSymptom, PatientState, PatientStateIdentity
 from app.schemas.patient import AllergyResponse, MedicalHistoryResponse, MedicationResponse
 
@@ -13,8 +13,9 @@ _PROFILE_SCALAR_FIELDS = ["age", "sex", "height_cm", "weight_kg", "emergency_con
 
 async def build_patient_state(db: AsyncSession, patient: Patient) -> PatientState:
     """Assembles the canonical patient_state.schema from Phase 1's tables (profile, history,
-    allergies, medications) and Phase 3's symptoms table. Never invents a value for a field it
-    can't find — missing data is surfaced in `unknowns`, not guessed (patient_state.rules)."""
+    allergies, medications), Phase 3's symptoms table, and Phase 9's vitals snapshot. Never
+    invents a value for a field it can't find — missing data is surfaced in `unknowns`, not
+    guessed (patient_state.rules)."""
 
     profile = await db.get(PatientProfile, patient.id)
 
@@ -28,6 +29,7 @@ async def build_patient_state(db: AsyncSession, patient: Patient) -> PatientStat
     symptom_rows = (
         await db.execute(select(Symptom).where(Symptom.patient_id == patient.id).order_by(Symptom.created_at))
     ).scalars().all()
+    vital_rows = (await db.execute(select(Vital).where(Vital.patient_id == patient.id))).scalars().all()
 
     unknowns: list[str] = []
     for field in _PROFILE_SCALAR_FIELDS:
@@ -73,7 +75,16 @@ async def build_patient_state(db: AsyncSession, patient: Patient) -> PatientStat
         medical_history=[MedicalHistoryResponse.model_validate(h) for h in history_rows],
         allergies=[AllergyResponse.model_validate(a) for a in allergy_rows],
         medications=[MedicationResponse.model_validate(m) for m in medication_rows],
-        vitals={},
+        vitals={
+            v.type: {
+                "value": v.value,
+                "unit": v.unit,
+                "timestamp": v.timestamp.isoformat(),
+                "quality": v.quality,
+                "source": v.source,
+            }
+            for v in vital_rows
+        },
         recent_events=[],
         risk_factors=[],
         unknowns=unknowns,

@@ -9,6 +9,34 @@ from app.safety.vital_rules import evaluate_vitals
 # medication decision -> safety_engine.outputs vocabulary
 _MEDICATION_DECISION_TO_SAFETY_DECISION = {"BLOCKED": "BLOCK", "REQUIRES_REVIEW": "MODIFY"}
 
+# app/patient_state/schema.py's PatientState.vitals is keyed by Phase 9's vital_system.
+# initial_measurements vocabulary (app/vitals/schema.py:VitalType); vital_rules.evaluate_vitals
+# expects a different, older key set chosen before Phase 9 existed. Translate rather than
+# rename either — vital_rules' keys are already load-bearing in tests and the live-verified
+# Phase 7/8 demos.
+_PATIENT_STATE_TO_VITAL_RULES_KEY = {
+    "heart_rate": "heart_rate",
+    "blood_pressure_systolic": "systolic_bp",
+    "blood_pressure_diastolic": "diastolic_bp",
+    "oxygen_saturation": "spo2",
+    "body_temperature": "body_temp_f",
+}
+
+
+def vitals_from_patient_state(patient_state_vitals: dict) -> dict[str, float]:
+    """Translates PatientState.vitals (Phase 9's snapshot, keyed by vital_system's own vital
+    names, each value a dict with a "value" field per assembler.py) into the flat
+    {rule_key: float} shape evaluate_vitals()/evaluate_safety() expect. Silently drops any
+    vital type vital_rules.py has no rule for (e.g. respiratory_rate, weight) rather than
+    guessing at a mapping — nothing invented, per this module's rules."""
+
+    result: dict[str, float] = {}
+    for vital_type, entry in patient_state_vitals.items():
+        rule_key = _PATIENT_STATE_TO_VITAL_RULES_KEY.get(vital_type)
+        if rule_key is not None:
+            result[rule_key] = entry["value"]
+    return result
+
 
 async def evaluate_safety(
     db: AsyncSession,

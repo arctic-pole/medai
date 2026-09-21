@@ -2,7 +2,7 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -253,6 +253,65 @@ class SafetyEvent(Base):
     decision: Mapped[str] = mapped_column(String, nullable=False)  # MODIFY | BLOCK | ESCALATE
     detail: Mapped[str] = mapped_column(Text, nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Device(Base):
+    """Phase 9: vital_system.device_pipeline's DEVICE. Only a "manual" device type is reachable
+    via the API today (no real integration exists — Phase 10) — this table exists now so a
+    real device registered later (Phase 10) doesn't need a schema change, per
+    "clinical engine must not depend on a specific wearable"."""
+
+    __tablename__ = "devices"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
+    device_type: Mapped[str] = mapped_column(String, nullable=False)  # "manual" today; a real vendor/type in Phase 10
+    label: Mapped[str | None] = mapped_column(String, nullable=True)  # user-facing name, e.g. "My smartwatch"
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Measurement(Base):
+    """vital_system.canonical_measurement, verbatim field set — the append-only log of every
+    reading ever ingested, valid or not (accepted ones also update the `vitals` snapshot
+    below). `type` uses vital_system.initial_measurements' own vocabulary, with blood_pressure
+    split into blood_pressure_systolic/blood_pressure_diastolic since canonical_measurement's
+    `value` is a single scalar, not a compound reading."""
+
+    __tablename__ = "measurements"
+
+    id: Mapped[uuid.UUID] = _uuid_pk()  # measurement_id
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id"), nullable=False)
+    type: Mapped[str] = mapped_column(String, nullable=False)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)  # manual | device | health_platform | simulated
+    device_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True), ForeignKey("devices.id"), nullable=True)
+    quality: Mapped[str] = mapped_column(String, nullable=False)  # good | acceptable | poor
+    confidence: Mapped[float | None] = mapped_column(Float, nullable=True)
+    accepted: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)  # False = failed validation, still logged
+    rejection_reason: Mapped[str | None] = mapped_column(String, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class Vital(Base):
+    """The current/latest value per (patient, type) — what patient_state.vitals is actually
+    assembled from (app/patient_state/assembler.py), distinct from `measurements`' full
+    history. Upserted only from *accepted* measurements."""
+
+    __tablename__ = "vitals"
+
+    patient_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("patients.id"), primary_key=True)
+    type: Mapped[str] = mapped_column(String, primary_key=True)
+    value: Mapped[float] = mapped_column(Float, nullable=False)
+    unit: Mapped[str] = mapped_column(String, nullable=False)
+    timestamp: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    quality: Mapped[str] = mapped_column(String, nullable=False)
+    source: Mapped[str] = mapped_column(String, nullable=False)
+    measurement_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), ForeignKey("measurements.id"), nullable=False)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
 
 
 class AuditLog(Base):

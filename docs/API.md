@@ -27,9 +27,27 @@ This is the **only** endpoint in the codebase allowed to hand a client anything
 Assessment-shaped — `app/reasoning`, `app/safety`, and `app/validation` were all built
 internal-only across Phases 6-8 specifically because nothing could safely expose them until
 this endpoint's gate (`get_validated_output`) existed. See `docs/AI_PIPELINE.md` for the full
-chain and its known gaps (vitals are always empty — Phase 9 doesn't exist yet; the endpoint's
-own proposed medications aren't cross-checked against medication safety, since `output_schema`'s
-`medication_information` is free text, not a structured drug list).
+chain and its known gaps. As of Phase 9, vitals recorded via `POST /vitals` are real — a
+critical vital on record now drives the safety engine to `ESCALATE` inside `/assessment` for
+real (live-verified deterministically; see `docs/AI_PIPELINE.md`). The endpoint's own proposed
+medications still aren't cross-checked against medication safety, since `output_schema`'s
+`medication_information` is free text, not a structured drug list — unchanged, still open.
+
+## Phase 9 endpoints (vitals / devices)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| POST | `/vitals` | bearer | `{type, value, unit, timestamp?}` → runs `vital_system.validation_stages` (unit check, range sanity, etc.) and, if accepted, persists to `measurements` and upserts the `vitals` current-snapshot row. `source` is always forced to `"manual"` server-side regardless of client input — manual entry is the only reachable path until a real `DeviceAdapter`/health-platform integration exists (Phase 10). Returns `201` with the stored `Measurement` if accepted; `422` with `MEASUREMENT_UNRELIABLE: <reason> — please take another measurement.` if rejected (still logged to `measurements`, never silently dropped, per `vital_system.on_suspicious_measurement`). A genuinely critical real value (e.g. SpO2 82%) is accepted, not rejected — the validation stages check plausibility/unit/format, not clinical severity. |
+| GET | `/vitals` | bearer | Current snapshot — one row per vital type, the latest accepted, non-backdated reading. |
+| GET | `/vitals/history?type=&limit=` | bearer | Full measurement history including rejected entries, newest first, optionally filtered by `type`. |
+| POST | `/devices` | bearer | `{device_type, label?}` → registers a device record. Registering a device does not make it capable of submitting readings automatically yet — `app/providers/devices/base.py` is an ABC with no concrete adapter; this endpoint exists so the schema/relationship is in place ahead of a real integration. |
+| GET | `/devices` | bearer | List the current patient's registered devices. |
+
+Live-verified end-to-end (see `docs/AI_PIPELINE.md` for the full transcript): accepted/rejected
+readings, the current-snapshot vs. history distinction, backdated-reading handling, and — via a
+follow-up script exercising `build_patient_state`/`evaluate_safety` directly — that a real
+SpO2=86% reading flows through to a real `ESCALATE` safety decision with the correct triggered
+rule (`VITAL_SPO2_EMERGENCY_001`).
 
 ## Phase 5 endpoints (medical knowledge / RAG)
 
@@ -85,5 +103,5 @@ Interactive schema: `GET /docs` (Swagger UI) or `GET /openapi.json` when the ser
 
 ## Not yet implemented
 
-`/vitals`, `/devices`, `/safety`, `/audit` (read API) from `api_endpoints.groups` land in later
-phases per `IMPLEMENTATION_PLAN.md`.
+`/safety`, `/audit` (read API) from `api_endpoints.groups` land in later phases per
+`IMPLEMENTATION_PLAN.md`.

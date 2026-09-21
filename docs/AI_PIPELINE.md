@@ -1,7 +1,8 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This reflects Phase 8 plus wiring
-> `POST /assessment` — the first user-facing clinical-output endpoint.
+> Filled in incrementally as each AI-related phase lands. This reflects Phase 9 (vital
+> ingestion) on top of Phase 8's `POST /assessment` — the first user-facing clinical-output
+> endpoint.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -13,14 +14,17 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 ```
 
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
-symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) ...
-`EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` +
-`MEDICATION_SAFETY` (Phase 7) → `OUTPUT_VALIDATION` (Phase 8) → `TEXT_RESPONSE`, now reachable
-via `POST /assessment` (`app/api/assessment.py`) — see "The assessment endpoint" below.
-`app/reasoning`, `app/safety`, and `app/validation` remain otherwise unreachable from the API;
-this endpoint is the sole caller allowed to treat their output as user-facing.
-`VITAL/HEALTH_DATA` (Phase 9) onward is still later phases — this endpoint always evaluates
-`DETERMINISTIC_SAFETY` against empty vitals, since nothing supplies real ones yet.
+symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) →
+`VITAL/HEALTH_DATA` (Phase 9, manual entry only) → `EVIDENCE_RETRIEVAL` (Phase 5) →
+`CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` + `MEDICATION_SAFETY` (Phase 7) →
+`OUTPUT_VALIDATION` (Phase 8) → `TEXT_RESPONSE`, now reachable via `POST /assessment`
+(`app/api/assessment.py`) — see "The assessment endpoint" below. `app/reasoning`, `app/safety`,
+and `app/validation` remain otherwise unreachable from the API; this endpoint is the sole caller
+allowed to treat their output as user-facing. As of Phase 9, this endpoint's `DETERMINISTIC_SAFETY`
+step evaluates *real* vitals from the `vitals` table (via `app/patient_state/assembler.py` →
+`vitals_from_patient_state()`), not an empty dict — see "Vital ingestion (Phase 9)" below.
+`VITAL/HEALTH_DATA` today means manual entry only; automatic device/health-platform retrieval
+(`vital_system.automatic_retrieval_preference`'s DEVICE/HEALTH_PLATFORM tiers) is Phase 10.
 
 ## Provider abstraction
 
@@ -304,19 +308,89 @@ originally planned, because a real failure occurred mid-run:
   response reaches the user without validation" than a clean run would have been: a real,
   unplanned external failure hit the system mid-pipeline, and the fail-closed design held.
 
+## Vital ingestion (Phase 9)
+
+`app/vitals/`: `schema.py` (`NormalizedMeasurement`, `ValidationOutcome`), `validation.py`
+(`validate_measurement()` — `vital_system.validation_stages`), `service.py`
+(`ingest_measurement()` — persistence + snapshot-upsert logic). `app/api/vitals.py` and
+`app/api/devices.py` expose `POST/GET /vitals`, `GET /vitals/history`, `POST/GET /devices` (see
+`docs/API.md`). `app/providers/devices/base.py` defines the `DeviceAdapter` ABC per
+`architecture.provider_interfaces`, with no concrete implementation — manual entry is
+deliberately *not* modeled as a `DeviceAdapter` (it isn't a device), so `/vitals` calls
+`ingest_measurement` directly rather than through the provider abstraction.
+
+- **Validation stages are sanity checks, not clinical judgment — a critical distinction called
+  out explicitly in `validation.py`'s module docstring.** `_SANITY_BOUNDS` (e.g. `heart_rate:
+  (0, 400)`, `oxygen_saturation: (0, 100)`, `body_temperature: (70, 115)`°F) exist only to catch
+  garbage input (wrong unit, transposed digits, an obviously impossible reading) — they are
+  deliberately far wider than Phase 7's sourced clinical thresholds
+  (`app/safety/vital_rules.py`). A genuinely critical real reading (e.g. SpO2 82%) must be
+  *accepted* here and left for the safety engine to act on, not rejected at ingestion — the two
+  layers have different jobs, and conflating them would let ingestion silently discard exactly
+  the readings the safety engine most needs to see. Enforced by a dedicated test
+  (`test_spo2_genuinely_low_is_still_accepted_not_rejected`) and verified live below.
+  `EXPECTED_UNITS` catches unit mismatches (e.g. `"beats"` for `heart_rate`, expected `"bpm"`)
+  separately from range sanity.
+- **Two-table persistence, deliberately not one.** Every submission — accepted or rejected —
+  is written to `measurements` (the full, append-only audit trail, per "never silently drop a
+  suspicious measurement"). Only an *accepted* measurement whose `timestamp` is not older than
+  the existing snapshot row's updates `vitals` (one row per `(patient_id, type)`, what
+  `PatientState.vitals` actually reads). This means a backdated accepted reading is logged but
+  never regresses the current snapshot — verified by
+  `test_newer_reading_updates_snapshot_older_backdated_one_does_not`.
+- **Reaches the canonical pipeline for real now.** `app/patient_state/assembler.py` queries
+  `Vital` rows and populates `PatientState.vitals` (previously always `{}`);
+  `app/reasoning/evidence_package.py`'s `relevant_vitals` is populated from that dict (previously
+  always `[]`); `app/safety/engine.py:vitals_from_patient_state()` translates
+  `vital_system`-named keys (`heart_rate`, `blood_pressure_systolic`, `blood_pressure_diastolic`,
+  `oxygen_saturation`, `body_temperature`) into the key names Phase 7's pre-existing
+  `vital_rules.py` already uses (`heart_rate`, `systolic_bp`, `diastolic_bp`, `spo2`,
+  `body_temp_f`) — a deliberate translation layer rather than renaming either side, since
+  `vital_rules.py`'s keys were already load-bearing in live-verified Phase 7/8 demos.
+  `respiratory_rate` and `weight` have no corresponding Phase 7 rule and are left untranslated
+  (no rule exists to trigger, per Phase 7's "no rule invented where no source gives one").
+
+**Verified live**, not just against fakes — two separate checks, deliberately split because the
+first needs no LLM call and the second is pure deterministic logic:
+
+- **The vitals API itself**, against a running dev server with real Postgres: registered a user;
+  `POST /vitals {heart_rate, 72, bpm}` → `201 accepted:true`; `POST /vitals {oxygen_saturation,
+  86, %}` → `201 accepted:true` (a real dangerously-low reading correctly preserved, not
+  rejected); `POST /vitals {heart_rate, 72, beats}` (wrong unit) → `422
+  MEASUREMENT_UNRELIABLE: unexpected unit 'beats' for heart_rate (expected 'bpm')`; `GET
+  /vitals` → correct 2-item current snapshot; `GET /vitals/history` → correct 3-item history
+  including the rejected entry with its `rejection_reason`; `POST /devices {manual, "Home BP
+  cuff"}` → `201` with the created device. This directly demonstrates the Phase 9 pass
+  criterion: "Vitals can enter the canonical patient state" (at the ingestion layer).
+- **The full deterministic chain**, run as a script against the same patient/data: called
+  `build_patient_state()` directly and confirmed `state.vitals` contained both real readings
+  with correct values/units/timestamps; called `vitals_from_patient_state(state.vitals)` and
+  confirmed the translated dict (`{"heart_rate": 72.0, "spo2": 86.0}`); called `evaluate_safety()`
+  with that dict and got `decision: "ESCALATE"`, correctly triggering
+  `VITAL_SPO2_EMERGENCY_001` ("SpO2 86.0% is below 90%") — the same rule and threshold verified
+  live in Phase 7, now driven by a real ingested reading instead of a hand-constructed dict.
+  This is also covered by fakes-based integration tests
+  (`test_vitals_safety_integration.py`) and a new `/assessment` integration test
+  (`test_assessment_rejects_llm_output_that_ignores_a_real_escalating_vital`), but this script
+  run is the first time it was exercised against the real live server/DB path rather than the
+  test client. **Not yet re-verified**: a real live Gemini call, fed this real escalating vital
+  through the full `/assessment` HTTP path, actually producing a model-generated
+  safety-corrected `Assessment` — blocked on today's exhausted free-tier quota (see "Provider
+  abstraction" above); the fakes-based test covers the same logical path.
+
 ## The assessment endpoint
 
 `POST /assessment` (`app/api/assessment.py`) chains everything above together for the first
 time: `build_patient_state` (Phase 3) → `build_evidence_package` (Phase 6, itself calling Phase
-5's `retrieve_evidence`) → `evaluate_safety` (Phase 7, `vitals={}`) → `get_validated_output`
-(Phase 8). It requires an owned `conversation_id` (404 otherwise) and always returns `200` with
-an `Assessment` body — `SAFE_FALLBACK` included, since that's a legitimate `output_schema`
-response, not an error.
+5's `retrieve_evidence`) → `evaluate_safety` (Phase 7, now with real vitals as of Phase 9) →
+`get_validated_output` (Phase 8). It requires an owned `conversation_id` (404 otherwise) and
+always returns `200` with an `Assessment` body — `SAFE_FALLBACK` included, since that's a
+legitimate `output_schema` response, not an error.
 
-- **Known gap, stated plainly**: this endpoint's own safety-engine call always passes
-  `vitals={}` (Phase 9 doesn't exist) and never populates `medication_findings` — there is no
-  reliable way yet to turn `Assessment.medication_information`'s free text (e.g. "consider
-  acetaminophen") into a `MedicationDBProvider.lookup()` call without guessing at a drug name.
+- **Known gap, stated plainly**: this endpoint's safety-engine call now uses real vitals but
+  still never populates `medication_findings` — there is no reliable way yet to turn
+  `Assessment.medication_information`'s free text (e.g. "consider acetaminophen") into a
+  `MedicationDBProvider.lookup()` call without guessing at a drug name.
   `check_medication_validation` (Phase 8) still runs on every request, but with nothing to
   compare against it is currently a no-op here specifically. Building a real extractor is
   future work.
@@ -345,8 +419,9 @@ response, not an error.
 
 ## Not yet implemented
 
-The conversation manager's `emergency_indicators` question tier is still unpopulated (see the
-conversation manager section above) — Phase 7's vital-threshold rules exist now, but nothing
-feeds them real vitals yet. Wiring safety_engine/medication safety into the *live conversation
-loop* itself (as opposed to the new dedicated endpoint) is still separate, undone work; and
-everything from Phase 9 (vitals/devices) onward.
+The conversation manager's `emergency_indicators` and `required_measurements` question tiers are
+still unpopulated (see the conversation manager section above) — Phase 7's vital-threshold rules
+and Phase 9's vitals now both exist, but this module hasn't been wired to either yet. Wiring
+safety_engine/medication safety into the *live conversation loop* itself (as opposed to the
+dedicated `/assessment` endpoint) is still separate, undone work. No concrete `DeviceAdapter`
+exists (Phase 9 built the ABC only) — automatic device/health-platform retrieval is Phase 10.

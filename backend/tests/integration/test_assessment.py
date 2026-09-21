@@ -85,6 +85,38 @@ async def test_assessment_returns_validated_grounded_assessment(client: AsyncCli
     assert body["evidence"][0]["source_id"] == str(source_id)
 
 
+async def test_assessment_rejects_llm_output_that_ignores_a_real_escalating_vital(
+    client: AsyncClient, db_session
+) -> None:
+    """Phase 9 integration: a real ingested critical vital must drive the endpoint's safety
+    evaluation to ESCALATE, and Phase 8's check_safety_engine_result must then reject an LLM
+    assessment that doesn't reflect it — exercising the correction pipeline for real, through
+    the full HTTP path, with a real (dangerously low) vital on record."""
+
+    headers = await _authed_headers(client, "assessVitals@example.com")
+    conversation_id = await _conversation_with_symptom(client, headers, db_session)
+    await client.post("/vitals", headers=headers, json={"type": "oxygen_saturation", "value": 85, "unit": "%"})
+
+    from app.reasoning.schema import Assessment
+
+    ignores_escalation = Assessment(status="caution", summary="Seems mild.", confidence="low")
+    correct = Assessment(
+        status="emergency",
+        summary="This requires urgent attention given the low oxygen saturation.",
+        confidence="low",
+        escalation="Seek emergency care immediately.",
+    )
+    app.dependency_overrides[get_llm_provider] = lambda: FakeReasoningLLMProvider([ignores_escalation, correct])
+    try:
+        resp = await client.post("/assessment", headers=headers, json={"conversation_id": conversation_id})
+    finally:
+        del app.dependency_overrides[get_llm_provider]
+
+    assert resp.status_code == 200
+    assert resp.json()["status"] == "emergency"
+    assert resp.json()["escalation"]
+
+
 async def test_assessment_falls_back_when_llm_not_configured(client: AsyncClient, db_session) -> None:
     headers = await _authed_headers(client, "assessD@example.com")
     conversation_id = await _conversation_with_symptom(client, headers, db_session)

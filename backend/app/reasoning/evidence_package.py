@@ -41,9 +41,16 @@ async def build_evidence_package(
 
     return EvidencePackage(
         patient_state=state,
-        relevant_vitals=[],  # Phase 9
+        relevant_vitals=[
+            f"{vtype}: {v['value']} {v['unit']} (quality: {v['quality']}, recorded {v['timestamp']})"
+            for vtype, v in state.vitals.items()
+        ],
         relevant_history=[h.condition for h in state.medical_history],
         retrieved_evidence=retrieved,
         known_unknowns=state.unknowns,
-        safety_flags=[],  # Phase 7
+        # Populated by the caller if it has already run the safety engine before building this
+        # package — build_evidence_package itself doesn't call evaluate_safety (Phase 7), since
+        # today's callers (e.g. app/api/assessment.py) run safety evaluation as a sibling step,
+        # not a prerequisite, of evidence-package assembly.
+        safety_flags=[],
     )

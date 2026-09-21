@@ -43,11 +43,12 @@ class PatientStateIdentity(BaseModel):
 class PatientState(BaseModel):
     """The canonical structured state — patient_state.schema, assembled (not stored as one
     blob) from patients/patient_profiles/medical_history/allergies/current_medications/symptoms
-    (Phase 1 + Phase 3 tables) plus vitals (empty until Phase 9). recent_events and risk_factors
-    are intentionally left empty: computing them is clinical inference, out of scope until
-    Phase 4 (conversation_manager) / Phase 6 (clinical_reasoner) — populating them here would
-    violate patient_state.rules ("LLM must NOT reason directly from unstructured conversation
-    alone") by having this assembly step quietly do reasoning no one asked it to do.
+    (Phase 1 + Phase 3 tables) and vitals (Phase 9's `vitals` snapshot table). recent_events and
+    risk_factors are intentionally left empty: computing them is clinical inference, out of
+    scope until Phase 4 (conversation_manager) / Phase 6 (clinical_reasoner) — populating them
+    here would violate patient_state.rules ("LLM must NOT reason directly from unstructured
+    conversation alone") by having this assembly step quietly do reasoning no one asked it to
+    do.
     """
 
     patient: PatientStateIdentity

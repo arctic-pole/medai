@@ -5,6 +5,7 @@ from app.api.allergies import router as allergies_router
 from app.api.assessment import router as assessment_router
 from app.api.auth import router as auth_router
 from app.api.conversations import router as conversations_router
+from app.api.devices import router as devices_router
 from app.api.evidence import router as evidence_router
 from app.api.health import router as health_router
 from app.api.history import router as history_router
@@ -13,6 +14,7 @@ from app.api.messages import router as messages_router
 from app.api.patient import router as patient_router
 from app.api.profile import router as profile_router
 from app.api.symptoms import router as symptoms_router
+from app.api.vitals import router as vitals_router
 from app.audit.middleware import AuditLogMiddleware
 from app.core.config import settings
 
@@ -45,6 +47,8 @@ def create_app() -> FastAPI:
     app.include_router(symptoms_router)
     app.include_router(evidence_router)
     app.include_router(assessment_router)
+    app.include_router(vitals_router)
+    app.include_router(devices_router)
 
     return app
 

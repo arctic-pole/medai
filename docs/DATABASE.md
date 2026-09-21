@@ -22,12 +22,15 @@ via Alembic migrations in `backend/alembic/versions/`.
 | `clinical_sources` | Phase 5: one row per ingested document *version* | Public reference content, not patient data — not encrypted. Never overwritten: re-ingesting the same `url` marks the old row `superseded_status='superseded'` and inserts a new one with an incremented `version` (`knowledge_base.versioning`) |
 | `knowledge_chunks` | Phase 5: one row per chunk of a `clinical_sources` row | `embedding` is a `vector(1024)` column (pgvector) with an HNSW cosine-distance index; `content` is plain `Text` (public data) |
 | `safety_events` | Phase 7: one row per non-PASS `safety_engine` decision | `rule_id`, `rule_version`, `decision` (MODIFY/BLOCK/ESCALATE), `detail` — per "log every BLOCK/ESCALATE/MODIFY with rule_id and version." `PASS` is never logged. |
+| `devices` | Phase 9: one row per registered patient device | `device_type`, optional `label`. No concrete `DeviceAdapter` exists yet (`app/providers/devices/base.py` is ABC-only) — registering a device does not yet make it capable of submitting readings automatically. |
+| `measurements` | Phase 9: one row per **every** submitted reading, accepted or rejected | `vital_system.canonical_measurement` fields (`type`, `value`, `unit`, `timestamp`, `source`, `quality`) plus `accepted`/`rejection_reason`. Never deleted or overwritten — this is the full audit trail, including rejected/unreliable submissions, per "never silently drop a suspicious measurement." |
+| `vitals` | Phase 9: one row per `(patient_id, type)` — the current-value snapshot | Upserted from `measurements` only when a new reading is **accepted** and its `timestamp` is not older than the existing row's. Rejected measurements and backdated accepted ones never touch this table; it is what `app/patient_state/assembler.py` reads into `PatientState.vitals`. |
 
 The canonical `patient_state.schema` (patient + symptoms + medical_history + allergies +
 medications + vitals + unknowns + data_quality, etc.) is **not** stored as a single blob — it's
-assembled on demand by `app/patient_state/assembler.py` from the tables above (`vitals` stays
-`{}` until Phase 9; `recent_events`/`risk_factors` stay `[]` until Phase 4/6, since computing them
-is clinical inference out of scope for this assembly step).
+assembled on demand by `app/patient_state/assembler.py` from the tables above. As of Phase 9,
+`vitals` is populated live from the `vitals` table; `recent_events`/`risk_factors` stay `[]` until
+Phase 4/6, since computing them is clinical inference out of scope for this assembly step.
 
 **No `safety_rules` table.** `medai_spec.yaml database.tables` doesn't list one (unlike
 `safety_events`, which it does list), and `safety_engine.emergency_triage.rule_schema` reads
