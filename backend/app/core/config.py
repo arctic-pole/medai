@@ -39,7 +39,10 @@ class Settings(BaseSettings):
     # key means "not configured"; app/providers/llm/gemini_provider.py fails closed
     # (LLMNotConfiguredError) rather than fabricating a response. See docs/KNOWN_LIMITATIONS.md.
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-3.8-flash"
+    # Free-tier quota (20 requests/day, hit during Phase 8 testing) is tracked per model, not
+    # per key — switching model id buys a fresh quota, it isn't a more generous one. Change
+    # any time via .env; a paid tier removes this ceiling entirely.
+    gemini_model: str = "gemini-3.6-flash"
 
     # OpenAIProvider (app/providers/llm/openai_provider.py) is kept as a second working
     # LLMProvider implementation but is not selected by get_llm_provider() — these are unused

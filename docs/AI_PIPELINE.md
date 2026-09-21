@@ -1,6 +1,6 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This is the Phase 7 state.
+> Filled in incrementally as each AI-related phase lands. This is the Phase 8 state.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -14,9 +14,9 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
 symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) ...
 `EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` +
-`MEDICATION_SAFETY` (Phase 7, this doc). All of Phase 6/7 are internal capabilities only — not
-wired into the conversation loop or exposed via any endpoint, see below. `VITAL/HEALTH_DATA`
-(Phase 9) and `OUTPUT_VALIDATION` (Phase 8) onward are still later phases.
+`MEDICATION_SAFETY` (Phase 7) → `OUTPUT_VALIDATION` (Phase 8, this doc). All of Phase 6/7/8 are
+internal capabilities only — not wired into the conversation loop or exposed via any endpoint,
+see below. `VITAL/HEALTH_DATA` (Phase 9) onward is still later phases.
 
 ## Provider abstraction
 
@@ -44,8 +44,11 @@ than guessed) and a naturally LLM-phrased follow-up question — see `docs/KNOWN
 for the exact example. Extraction is also still tested against a `FakeLLMProvider` (see
 `backend/tests/fakes.py`) so tests don't depend on a live key or network call.
 
-Model: `gemini-3.8-flash` by default (`GEMINI_MODEL` env var) — the current model at the time
-this was wired in; change it any time via `.env`, no code change needed.
+Model: `gemini-3.6-flash` by default (`GEMINI_MODEL` env var) — changed from the initially-wired
+`gemini-3.8-flash` after Phase 8 testing hit its free-tier cap (20 requests/day). That quota is
+tracked **per model id, not per key** — switching model bought a fresh quota, not a bigger one;
+expect to hit it again with enough live testing on any single free-tier model. Change the model
+any time via `.env`, no code change needed; a paid tier removes the ceiling entirely.
 
 ## Symptom extraction (Phase 3)
 
@@ -250,10 +253,58 @@ correctly triggered both `VITAL_SPO2_EMERGENCY_001` and `VITAL_HR_HIGH_001`, dec
 to `safety_events` (verified by querying the dev DB directly) — while a second call with normal
 vitals and no medication findings correctly returned `PASS` and logged nothing.
 
+## Output validator (Phase 8)
+
+`app/validation/`: `checks.py` (the 10 `output_validator.checks`, each a standalone function),
+`validator.py` (`get_validated_output` — the correction pipeline and fail-closed fallback).
+
+- **Internal capability only — no API endpoint, same reasoning as Phase 6/7's scoping.** This
+  phase closes the loop those two left open (Phase 8 is literally the gate `bypass_forbidden`
+  requires before output can reach a user), but wiring an actual `/assessment` endpoint was
+  deliberately deferred rather than assumed — flag if you want that built next.
+  `get_validated_output()` is the **only** function in this codebase intended to return an
+  Assessment fit for release; `reasoner.generate_assessment()` (Phase 6) returns unvalidated
+  output and must never be treated as user-facing on its own.
+- **The 10 checks**, mapped 1:1 to the spec's own list: `schema_compliance` (belt-and-braces
+  beyond what pydantic already enforces at construction); `unsupported_claims` and
+  `uncertainty_requirements` (reuse Phase 6's `check_grounding`/`check_uncertainty_language` as
+  the *official* gate, not just defense-in-depth); `evidence_availability` (substantive claims
+  need at least one citation); `dangerous_language` (false-reassurance phrases, distinct from
+  false-certainty ones); `prescription_like_directives` (dosage-shaped text, prescriptive
+  phrasing); `contradictions` (status/escalation consistency); `safety_engine_result` (an
+  `ESCALATE` from Phase 7 must be reflected in the assessment's own `status`, regardless of what
+  the LLM itself concluded — `safety_engine.rule`: hard rules take precedence); `medication_
+  validation` (a medication Phase 7 `BLOCKED` can't appear as a recommended option);
+  `escalation_requirements` (`emergency` status needs real escalation text).
+- **Correction pipeline**: on any failed check, `reasoner.generate_assessment()` is called again
+  with the failure reasons fed back into the prompt (one bounded retry by default,
+  `max_correction_attempts`) — `output_validator.on_failure`'s "return to correction pipeline".
+  If that still fails, or if anything in this whole path raises unexpectedly (a bug in the
+  checks themselves, a provider outage, a rate limit), `get_validated_output` **fails closed**
+  and returns `SAFE_FALLBACK` (`safe_fallback`, verbatim) rather than propagating an exception
+  or releasing unvalidated content — `output_validator.on_validator_failure`: "Fail closed — do
+  not release output."
+
+**Verified live**, not just against fakes — and this run ended up demonstrating more than
+originally planned, because a real failure occurred mid-run:
+- **Case A** (normal vitals): the first generation attempt hit a transient `503` from Gemini;
+  the built-in retry succeeded on attempt 2, and the resulting assessment passed all 10 checks
+  on the first validation pass — a real end-to-end success.
+- **Case B** (SpO2 86%, `safety_engine` decision `ESCALATE`): the LLM's first assessment said
+  `status: "caution"` — genuinely ignoring the deterministic safety decision, exactly the
+  failure `check_safety_engine_result` exists to catch. The validator correctly rejected it and
+  triggered the correction pipeline. The retry then hit a real `429` rate limit (Gemini's
+  free-tier cap — see "Provider abstraction" above) on both of `generate_assessment`'s own
+  internal attempts, so the exception propagated up as designed — and `get_validated_output`
+  correctly caught it and returned `SAFE_FALLBACK` verbatim, rather than releasing the
+  ESCALATE-violating assessment or crashing. This is a stronger proof of "no final clinical
+  response reaches the user without validation" than a clean run would have been: a real,
+  unplanned external failure hit the system mid-pipeline, and the fail-closed design held.
+
 ## Not yet implemented
 
-`output_validator` (Phase 8); the conversation manager's `emergency_indicators` question tier
-is still unpopulated (see the conversation manager section above) — Phase 7's vital-threshold
-rules exist now, but nothing feeds them real vitals yet, and wiring safety_engine/medication
-safety into the live conversation loop is separate work Phase 6/7 deliberately didn't do (see
-"internal capability only" above); and everything from Phase 9 (vitals/devices) onward.
+The conversation manager's `emergency_indicators` question tier is still unpopulated (see the
+conversation manager section above) — Phase 7's vital-threshold rules exist now, but nothing
+feeds them real vitals yet, and wiring safety_engine/medication safety/the validator into the
+live conversation loop (or exposing any of it via an endpoint) is separate work Phases 6-8
+deliberately didn't do; and everything from Phase 9 (vitals/devices) onward.

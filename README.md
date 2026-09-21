@@ -21,19 +21,20 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Phase 7 (Safety Engine & Medication Safety) done, as an **internal capability only** (same
-reasoning as Phase 6 below — `output_validator`, Phase 8, doesn't exist yet to gate output for
-real users). `app/safety/` deterministically decides `PASS`/`MODIFY`/`BLOCK`/`ESCALATE` from
-sourced vital-sign thresholds (AHA/WHO/MedlinePlus) and a real openFDA-backed medication safety
-pipeline — verified live: real drug lookups correctly blocked an allergen, flagged a real
-interaction + boxed warning for review, and allowed a clean medication; combined with abnormal
-vitals it correctly escalated and logged to `safety_events`. Phase 6 (Clinical Reasoning) is
-also internal-only — `app/reasoning/` produces a schema-valid, grounded `Assessment` via
-Gemini, verified live. Phase 5 (Medical Knowledge / RAG), Phase 4 (Conversation Manager), and
-Phases 0–2 are also done. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live.
-See `docs/KNOWN_LIMITATIONS.md` for the current, up-to-date status and open decisions,
-`docs/AI_PIPELINE.md` for how the pieces fit together, and `mobile/README.md` for
-mobile-specific gaps.
+Phase 8 (Output Validator) done, as an **internal capability only** — same reasoning as Phases
+6/7 (no `/assessment` endpoint yet; that's a deliberate deferral, not an oversight). `app/
+validation/` runs the 10 spec-defined checks, retries the reasoner once with correction
+feedback on failure, and falls back to a safe response if that also fails or if anything goes
+wrong internally. Verified live in an unusually convincing way: a real run hit both a
+successfully-retried transient API error *and* a real rate limit mid-correction, and the
+fail-closed path handled both correctly — including correctly rejecting one real LLM response
+for contradicting the deterministic safety engine's escalation decision. Phases 5–7 (Medical
+Knowledge/RAG, Conversation Manager, Safety Engine & Medication Safety, Clinical Reasoning) and
+Phases 0–2 are also done. LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live;
+note its free tier caps at 20 requests/day **per model id** — `GEMINI_MODEL` in `.env` lets you
+switch to a fresh quota if you hit it. See `docs/KNOWN_LIMITATIONS.md` for the current,
+up-to-date status and open decisions, `docs/AI_PIPELINE.md` for how the pieces fit together,
+and `mobile/README.md` for mobile-specific gaps.
 
 ## Backend — local development
 
