@@ -53,47 +53,72 @@
   - WHO pulse oximetry manual: https://cdn.who.int/media/docs/default-source/patient-safety/pulse-oximetry/who-ps-pulse-oxymetry-training-manual-en.pdf — **direct primary-source fetch succeeded**; exact thresholds quoted in `app/safety/vital_rules.py`.
   - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm — **direct fetch succeeded**; exact quote in `app/safety/vital_rules.py`. No dangerous-fever/hypothermia threshold is stated on this page, so none is encoded as a rule.
 
-## Current phase: 12 — Complete Pipeline
+## Current phase: 13 — Security Hardening
 
-- **Scope decision (user-confirmed)**: "core pipeline integration," not all 15 `ux.screens` in
-  one pass (only `home`/`conversation` existed before this phase). See
-  `docs/AI_PIPELINE.md`'s "Complete pipeline integration (Phase 12)" section for the full
-  breakdown of what that means concretely.
-- **`POST /messages` now runs the real pipeline automatically.** Once nothing more is missing
-  to ask, `app/api/messages.py` runs the same `build_evidence_package` → `evaluate_safety` →
-  `get_validated_output` chain `POST /assessment` runs, and returns the result as the
-  assistant's reply (`is_assessment`/`assessment_status`/`escalation` on the response tell the
-  mobile client which kind of reply it got). **Correction to how this worked before**:
-  `app/conversation/manager.py` used to return a hardcoded placeholder ("a real assessment comes
-  in a later development phase") once nothing was missing — that placeholder, and the `RESPOND`
-  action name, are both retired; `select_action` now returns `RUN_ASSESSMENT`, matching the
-  spec's own name.
-- **The standalone "Get assessment" button (Phase 11) is removed.** There is no longer any
-  mobile UI action separate from sending a message — the conversation itself is the only
-  interface (`ux.paradigm`, `ux.user_must_not_be_required_to`).
-- **Session persistence**: `ConversationScreen` now resumes the most recent conversation
-  (`GET /conversations`, already ordered newest-first) instead of always creating a new one.
-  Historical assistant messages render as plain text — whether a past reply was itself a
-  validated Assessment isn't persisted on the `Message` row, so Play/high-risk-confirmation
-  affordances only apply to messages received in the current live session.
-- **1 of 5 `ux.confirmation_required_when` triggers built** (`high_risk_recommendation_considered`
-  — a modal, non-dismissible confirmation for an `urgent`/`emergency` assessment); the other 4
-  honestly deferred, not faked, because no real detection signal and/or mobile surface exists
-  for them yet — see `docs/AI_PIPELINE.md` for exactly why each one specifically is deferred.
-- **Verified live, not just against fakes**: a real HTTP sequence (register → fill
-  profile/history/allergies/medications → create conversation → send one message) correctly
-  triggered `RUN_ASSESSMENT` immediately and returned the right response shape in 0.3s (LLM
-  deliberately unconfigured for that run); `GET /conversations`/`GET /messages` against the same
-  account confirmed exactly the data the mobile resume path depends on. **A real Gemini call was
-  also attempted and took unusually long** (didn't resolve within several minutes, well beyond
-  the ~2-minute documented worst case) — `netstat` confirmed a genuine live connection to Google
-  the whole time, not a local hang, but this wasn't root-caused further; flagged honestly rather
-  than silently worked around. The fakes-based `test_send_message_runs_real_assessment_...` test
-  is what actually proves a successful real-shaped Gemini response flows through correctly.
-- **152/152 backend tests** (2 new/updated conversation-flow tests plus the pre-existing suite,
-  all still green after the `manager.py` changes), **19/19 mobile tests** (4 new: session
-  resume, automatic-assessment-as-reply, and the high-risk confirmation dialog's
-  show/tap-outside-doesn't-dismiss/acknowledge behavior).
+Full design and live-verification detail lives in `docs/SECURITY.md` (the dedicated doc this
+phase expands fully, as planned since Phase 1). Summary:
+
+- **A real, exploitable vulnerability found and fixed**: `JWT_SECRET_KEY` and
+  `FIELD_ENCRYPTION_KEY` both had public, well-known placeholder defaults with nothing stopping
+  a real deployment from silently running with them unchanged — anyone who read this
+  (open-source) repo could have forged valid access tokens or decrypted every "encrypted at
+  rest" column. `Settings` now refuses to start outside `environment=="development"` unless
+  both have been changed to real values — verified live (a `production`-environment startup
+  with the defaults fails immediately with a clear error; with real values, it succeeds).
+- **Automated secret-scanning added to CI** (`gitleaks/gitleaks-action@v3`,
+  `.github/workflows/secret-scan.yml`) — daily plus every push/PR. A manual history scan run
+  first found nothing already leaked.
+- **Access control**: audited all 13 routers (all correctly scoped); closed real test-coverage
+  gaps (allergies/medications cross-user `DELETE`, which wasn't tested before — only `PATCH`
+  was, and only for history) in a new consolidated `test_access_control.py`.
+- **Input sanitisation — real gaps found and fixed**: roughly a dozen fields (`notes`,
+  `reaction`, `dosage`, `emergency_contact_*`, `LoginRequest.password`, `VitalSyncRequest.
+  readings`, and others) had no upper bound at all. The most concrete one: an unbounded login
+  password let an *unauthenticated* caller force argon2 to hash an arbitrarily large input on
+  every attempt — a real CPU-cost DoS vector, not theoretical. All fixed with explicit
+  `max_length`s; the rejection behavior itself is tested, not just the field declaration.
+- **Privacy controls (user-confirmed scope: both export and delete)**: `GET /privacy/export`
+  (every table a patient's data lives in, one response) and `DELETE /privacy/me` (cascading,
+  irreversible, password-reconfirmed deletion across every patient-owned table — audit logs
+  deliberately excluded, see `docs/SECURITY.md` for why). Both verified live against a running
+  dev server with real data, including confirming the old access token genuinely stops working
+  after deletion and the freed email can be re-registered.
+- **Dedicated prompt-injection adversarial test suite** (`tests/unit/test_prompt_injection.py`):
+  proves, using recording fakes and a realistic injection payload, that untrusted content never
+  reaches any of the three LLM `system` prompts — only ever the user/task prompt — at every call
+  site this codebase has one; and separately proves the deterministic-safety-overrides-a-fooled-
+  LLM defense-in-depth backstop, framed explicitly around injected text this time.
+- **Audit logs**: behaviorally verified (not just by code inspection) that a genuinely sensitive
+  value sent in a request never appears anywhere in `audit_logs`, and that `module` is built
+  from the path only, never a query string.
+- **Encryption**: audited coverage; found and disclosed one real gap — numeric vital values
+  aren't encrypted at rest (only free-text fields are; encrypting a `Float` column needs a new
+  type this phase didn't build). TLS documented as a concrete deployment requirement (no real
+  deployment target exists to configure it against).
+- **Known gaps, disclosed rather than silently left implicit**: no rate limiting on `/auth/
+  login` (the per-attempt CPU-cost fix doesn't address attempt *count*); `ENVIRONMENT` still
+  defaults to `"development"` if unset, so the CORS permissive-default risk (distinct from, and
+  lower-severity than, the two secrets already guarded) wasn't independently fixed; no mobile UI
+  for the new privacy endpoints (consistent with Phase 12's 13-deferred-screens scope decision).
+- **190/190 backend tests** (38 new: 5 config-guard, 14 access-control, 3 audit-log, 6
+  input-bounds, 5 privacy, 4 prompt-injection, plus one added case to the existing
+  no-auth-required sweep).
+
+## Phase 12 — Complete Pipeline (superseded above for its own security-relevant follow-ups)
+
+Wired the full pipeline into the conversation loop itself: `POST /messages` now runs the real
+assessment pipeline automatically once nothing more is missing, replacing a hardcoded
+placeholder and the Phase 11 standalone "Get assessment" button — the conversation is the only
+interface. Added session persistence (resumes the most recent conversation instead of always
+starting over) and 1 of 5 `ux.confirmation_required_when` triggers
+(`high_risk_recommendation_considered`, a modal non-dismissible dialog) — the other 4 honestly
+deferred, no real detection signal or mobile surface exists for them. Scope decision
+(user-confirmed): "core pipeline integration," not all 15 `ux.screens` — only 2 existed before
+this phase, 13 remain deferred with their backend APIs already built. Verified live: a real HTTP
+sequence correctly triggered the automatic pipeline in 0.3s; a real Gemini call separately
+attempted took unusually long (well beyond the documented ~2-minute worst case, confirmed via
+`netstat` as a genuine live connection, not a local hang) and wasn't root-caused further. 152/152
+backend, 19/19 mobile tests as of this phase.
 
 ## Phase 11 — TTS (superseded above for the "Get assessment" button, which no longer exists)
 
@@ -225,8 +250,10 @@ Reranking is a no-op (plain cosine-similarity order) — no reranker model was s
   flow. Mobile also calls `/vitals/sync` (Phase 10's "Sync Health Connect data" button) as a
   standalone action, and `/assessment/speech` (Play/Stop on an assessment message) — the latter
   is now reached from *within* the conversation, not a separate action, as of Phase 12.
-- Dev-only CORS (`allow_origins=["*"]`) on the backend — must be locked down before any real
-  deployment (Phase 13).
+- Dev-only CORS (`allow_origins=["*"]`) on the backend, gated behind
+  `ENVIRONMENT=="development"` — reviewed in Phase 13 (`docs/SECURITY.md`) and found already
+  reasonably safe (no CORS middleware at all outside dev), with one residual, disclosed gap:
+  `environment` itself still defaults to `"development"` if unset.
 - A `consents` table was added beyond `medai_spec.yaml`'s explicit `database.tables` list, to
   satisfy `security.consent_record_fields` — flagged in `IMPLEMENTATION_PLAN.md` and
   `docs/DATABASE.md`.

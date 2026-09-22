@@ -21,30 +21,33 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-The conversation itself is now the complete interface: `POST /messages` asks follow-up
-questions until nothing more is missing, then automatically runs the full clinical pipeline
-(patient state → vital ingestion, manual or Health Connect → evidence retrieval → clinical
-reasoning → the deterministic safety engine → output validation) and returns a validated
-`Assessment`'s summary as the reply — never raw LLM output, by construction. Optional spoken
-audio for that same, actually-validated result is available via `POST /assessment/speech`
-(`ValidatedText`, `app/tts/schema.py`, can only be minted by code that has already called
-`get_validated_output()`) — TTS is never the only response channel. A high-risk
-(`urgent`/`emergency`) result triggers a required, non-dismissible confirmation prompt on mobile
-(`ux.confirmation_required_when`). Session persistence means the mobile app resumes the most
-recent conversation on launch rather than always starting over. This chains Phases 3-12 into one
-gated pipeline, reachable through a single chat screen — no separate "get assessment" action.
-**Verified live**: a real HTTP sequence (register → fill profile/history/allergies/medications →
-message) correctly triggered the automatic assessment pipeline and returned in 0.3s; real Health
-Connect data synced end-to-end on a real Android emulator (Phase 10); a real `/assessment/speech`
-call returned a genuine WAV file from real offline (pyttsx3) synthesis (Phase 11). Known gaps:
-medication proposals aren't cross-checked against medication safety; Health Connect's
-`DeviceAdapter` necessarily lives in the mobile app, not the backend; Apple HealthKit and cloud
-health platforms (Fitbit, Withings) remain unimplemented; TTS has no streaming synthesis and
-audio playback stays explicit-tap-only; 13 of 15 `ux.screens` (profile, history, medications,
-allergies, settings, etc.) remain unbuilt on mobile — a deliberate Phase 12 scope decision, their
-backend APIs already exist; only 1 of 5 confirmation-prompt triggers has real signal to act on
-today. Phases 0–12 (Foundation through Complete Pipeline) are all done — see
-`docs/KNOWN_LIMITATIONS.md` for the up-to-date phase-by-phase status.
+The conversation itself is the complete interface: `POST /messages` asks follow-up questions
+until nothing more is missing, then automatically runs the full clinical pipeline (patient state
+→ vital ingestion, manual or Health Connect → evidence retrieval → clinical reasoning → the
+deterministic safety engine → output validation) and returns a validated `Assessment`'s summary
+as the reply — never raw LLM output, by construction. Optional spoken audio for that same,
+actually-validated result is available via `POST /assessment/speech`; a high-risk result
+triggers a required confirmation prompt on mobile; session persistence resumes the most recent
+conversation on launch. As of Phase 13 (security hardening), the backend has also been audited
+end to end: a real vulnerability was found and fixed (both the JWT-signing key and the
+field-encryption key shipped with public placeholder defaults that nothing stopped a real
+deployment from silently using — the app now refuses to start with either one outside
+`environment=="development"`), automated secret-scanning runs in CI, roughly a dozen
+previously-unbounded input fields were bounded (including an unauthenticated login-password
+DoS vector), a dedicated prompt-injection adversarial test suite was added, and
+`GET /privacy/export` / `DELETE /privacy/me` were built and verified live against real data.
+**Verified live**: the automatic assessment pipeline (0.3s, register → fill profile/history/
+allergies/medications → message); real Health Connect data synced end-to-end on a real Android
+emulator (Phase 10); a real `/assessment/speech` call returning genuine WAV audio (Phase 11); the
+new secrets guard refusing an insecure production startup and accepting a secure one; and the
+full privacy export/delete flow (including confirming a deleted account's access token
+immediately stops working). Known gaps: medication proposals aren't cross-checked against
+medication safety; 13 of 15 `ux.screens` remain unbuilt on mobile (their backend APIs already
+exist); only 1 of 5 confirmation-prompt triggers has real signal to act on; numeric vital values
+aren't encrypted at rest (unlike every other sensitive column); no rate limiting on login
+attempts; no real deployment target exists to configure TLS against. Phases 0–13 (Foundation
+through Security Hardening) are all done — see `docs/KNOWN_LIMITATIONS.md` and
+`docs/SECURITY.md` for the up-to-date, full-detail status.
 
 LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live across most phases. Its free
 tier is rate-limited in a way that's turned out less predictable than first assumed: four model

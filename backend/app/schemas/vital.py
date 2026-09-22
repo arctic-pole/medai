@@ -1,15 +1,20 @@
 import uuid
 from datetime import datetime
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.vitals.schema import VitalType
+
+# Every real unit vital_system uses is a few characters ("bpm", "mmHg", "%", "breaths/min",
+# "kg", "F") — bounded generously above that, not to the exact set, so a genuinely new unit
+# doesn't need a schema change, while still rejecting an arbitrarily large string.
+_MAX_UNIT_LENGTH = 20
 
 
 class VitalCreateRequest(BaseModel):
     type: VitalType
     value: float
-    unit: str
+    unit: str = Field(min_length=1, max_length=_MAX_UNIT_LENGTH)
     timestamp: datetime | None = None  # defaults to now if omitted
 
 
@@ -41,8 +46,8 @@ class VitalResponse(BaseModel):
 
 
 class DeviceCreateRequest(BaseModel):
-    device_type: str
-    label: str | None = None
+    device_type: str = Field(min_length=1, max_length=50)
+    label: str | None = Field(default=None, max_length=200)
 
 
 class DeviceResponse(BaseModel):
@@ -62,13 +67,16 @@ class VitalSyncReading(BaseModel):
 
     type: VitalType
     value: float
-    unit: str
+    unit: str = Field(min_length=1, max_length=_MAX_UNIT_LENGTH)
     timestamp: datetime
 
 
 class VitalSyncRequest(BaseModel):
     device_id: uuid.UUID
-    readings: list[VitalSyncReading]
+    # Capped so a single sync call can't submit an unbounded number of readings in one request
+    # (input sanitisation / DoS, Phase 13) — 1000 comfortably covers even a full week of
+    # multiple-times-daily readings across every vital_system.initial_measurements type.
+    readings: list[VitalSyncReading] = Field(max_length=1000)
 
 
 class VitalSyncResult(BaseModel):

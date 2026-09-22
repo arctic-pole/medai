@@ -98,10 +98,21 @@ Phase 2's conversation flow keeps working even with no LLM provider configured. 
 | PATCH/DELETE | `/medications/{id}` | bearer | Update / delete one entry (404 if not owned by caller) |
 
 Every endpoint has a pydantic request/response schema (`app/schemas/`), requires authentication
-except `/healthz` and `/auth/*`, validates input at the boundary, and returns structured error
+except `/healthz` and `/auth/*`, validates input at the boundary (every string/list field has an
+explicit upper bound as of Phase 13 — see `docs/SECURITY.md`), and returns structured error
 responses (`{"detail": "..."}`) — per `api_endpoints.every_endpoint_requires`.
 
 Interactive schema: `GET /docs` (Swagger UI) or `GET /openapi.json` when the server is running.
+
+## Phase 13 endpoints (privacy)
+
+| Method | Path | Auth | Description |
+|---|---|---|---|
+| GET | `/privacy/export` | bearer | Every table the caller's own data lives in, in one response — profile, history, allergies, medications, symptoms, conversations+messages, devices, measurements, vitals, safety events, consents, and (for transparency) the caller's own audit log rows. `security.minimum_requirements: minimal_data_collection`. |
+| DELETE | `/privacy/me` | bearer | `{password}` → cascading, irreversible deletion of every patient-owned table (audit logs deliberately excluded — see `docs/SECURITY.md`). `401` if the password doesn't match the account's, leaving the account untouched. `204` on success; the caller's access token stops working immediately since the underlying user row is gone. |
+
+See `docs/SECURITY.md` for the full design (what's included/excluded and why) and live
+verification transcript.
 
 ## Auth flow
 

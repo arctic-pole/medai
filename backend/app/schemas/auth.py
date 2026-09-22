@@ -10,11 +10,14 @@ class RegisterRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    # Bounded even though it's compared against a hash, not stored — an unbounded password
+    # would let an unauthenticated caller force argon2 to hash an arbitrarily large input on
+    # every login attempt, a real CPU-cost DoS vector (input sanitisation, Phase 13).
+    password: str = Field(min_length=1, max_length=128)
 
 
 class RefreshRequest(BaseModel):
-    refresh_token: str
+    refresh_token: str = Field(min_length=1, max_length=2000)
 
 
 class TokenResponse(BaseModel):

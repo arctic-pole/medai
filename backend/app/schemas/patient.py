@@ -18,12 +18,12 @@ class PatientResponse(BaseModel):
 
 class ProfileUpdateRequest(BaseModel):
     age: int | None = Field(default=None, ge=0, le=130)
-    sex: str | None = None
+    sex: str | None = Field(default=None, max_length=50)
     height_cm: float | None = Field(default=None, gt=0, le=300)
     weight_kg: float | None = Field(default=None, gt=0, le=500)
-    emergency_contact_name: str | None = None
-    emergency_contact_phone: str | None = None
-    consent_status: str | None = None
+    emergency_contact_name: str | None = Field(default=None, max_length=200)
+    emergency_contact_phone: str | None = Field(default=None, max_length=50)
+    consent_status: str | None = Field(default=None, max_length=50)
 
 
 class ProfileResponse(BaseModel):
@@ -44,14 +44,14 @@ class ProfileResponse(BaseModel):
 
 class MedicalHistoryCreateRequest(BaseModel):
     condition: str = Field(min_length=1, max_length=500)
-    status: str = "active"
-    notes: str | None = None
+    status: str = Field(default="active", max_length=50)
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class MedicalHistoryUpdateRequest(BaseModel):
-    condition: str | None = None
-    status: str | None = None
-    notes: str | None = None
+    condition: str | None = Field(default=None, min_length=1, max_length=500)
+    status: str | None = Field(default=None, max_length=50)
+    notes: str | None = Field(default=None, max_length=2000)
 
 
 class MedicalHistoryResponse(BaseModel):
@@ -70,14 +70,14 @@ class MedicalHistoryResponse(BaseModel):
 
 class AllergyCreateRequest(BaseModel):
     substance: str = Field(min_length=1, max_length=200)
-    reaction: str | None = None
-    severity: str | None = None
+    reaction: str | None = Field(default=None, max_length=500)
+    severity: str | None = Field(default=None, max_length=50)
 
 
 class AllergyUpdateRequest(BaseModel):
-    substance: str | None = None
-    reaction: str | None = None
-    severity: str | None = None
+    substance: str | None = Field(default=None, min_length=1, max_length=200)
+    reaction: str | None = Field(default=None, max_length=500)
+    severity: str | None = Field(default=None, max_length=50)
 
 
 class AllergyResponse(BaseModel):
@@ -96,14 +96,14 @@ class AllergyResponse(BaseModel):
 
 class MedicationCreateRequest(BaseModel):
     name: str = Field(min_length=1, max_length=200)
-    dosage: str | None = None
-    frequency: str | None = None
+    dosage: str | None = Field(default=None, max_length=200)
+    frequency: str | None = Field(default=None, max_length=200)
 
 
 class MedicationUpdateRequest(BaseModel):
-    name: str | None = None
-    dosage: str | None = None
-    frequency: str | None = None
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    dosage: str | None = Field(default=None, max_length=200)
+    frequency: str | None = Field(default=None, max_length=200)
 
 
 class MedicationResponse(BaseModel):
