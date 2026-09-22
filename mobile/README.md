@@ -18,24 +18,39 @@ Health Connect (`lib/services/health_connect_adapter.dart`) and syncs them to th
 **verified live end-to-end on a real Android emulator**, not just against fakes or via curl —
 see `docs/AI_PIPELINE.md` for the full transcript.
 
-Phase 11: a "Get assessment" app-bar action on `ConversationScreen` fetches a real validated
-`Assessment` (`POST /assessment`) and shows its summary as text immediately; a Play/Stop icon
-on that message fetches and plays its audio (`POST /assessment/speech`) via
-`lib/services/speech_playback_service.dart` (backed by `audioplayers`). Synthesis happens
-server-side (`backend/app/providers/tts/`) — this service is playback only. Barge-in:
-activating the mic always interrupts any audio currently playing, before even checking whether
-STT is available.
+Phase 11 (superseded by Phase 12 below for how it's triggered): TTS playback support was added
+— `lib/services/speech_playback_service.dart` (backed by `audioplayers`) plays audio fetched
+from `POST /assessment/speech`. Synthesis happens server-side (`backend/app/providers/tts/`) —
+this service is playback only. Barge-in: activating the mic always interrupts any audio
+currently playing, before even checking whether STT is available.
 
-Verified: `flutter analyze` (clean), `flutter test` (15/15 passing — see below for the Phase 11
-additions), `flutter build web` (succeeds), and `flutter build apk --release` (succeeds,
-installed and run on a real Android emulator, Phase 10). The voice/STT path still has no
-automated test (no microphone harness in this environment) — verified manually by confirming
-the equivalent typed-text flow passes and the backend endpoints work end-to-end. Phase 11's new
-tests: `speech_playback_service_test.dart` (6 — barge-in ordering, interrupt-not-overlap,
-playback failure raising `TtsPlaybackException` rather than failing silently, `stop()` never
-throwing, completion-event forwarding) and 4 new `conversation_screen_test.dart` cases (text
-shown before any audio is requested; Play/Stop interrupt correctly; a speech-fetch failure
-shows inline without removing the already-shown text; mic activation interrupts playback).
+Phase 12: `ConversationScreen` is now the **complete interface** — there is no separate "get
+assessment" action. `POST /messages` itself returns a real validated Assessment once nothing
+more is missing (`SendMessageResult.isAssessment`), rendered as a normal assistant message with
+a Play control attached. A high-risk result (`assessmentStatus` `urgent`/`emergency`) triggers a
+required, non-dismissible confirmation dialog (`ux.confirmation_required_when:
+high_risk_recommendation_considered`) — tapping outside does not close it; only the "I
+understand" button does. **Session persistence**: on launch, the screen calls
+`GET /conversations` (already ordered newest-first) and resumes the most recent one — loading
+its history via `GET /messages` — instead of always starting a new conversation
+(`ux.session_auto_preserved`, `resume_previous_consultation`). A resumed conversation's
+*historical* messages render as plain text; the Play button and confirmation dialog only apply
+to a message received in the current live session, since whether a past reply was itself a
+validated Assessment isn't persisted on the `Message` row.
+
+Verified: `flutter analyze` (clean), `flutter test` (19/19 passing), `flutter build web`
+(succeeds), and `flutter build apk --release` (succeeds, installed and run on a real Android
+emulator, Phase 10). The voice/STT path still has no automated test (no microphone harness in
+this environment) — verified manually by confirming the equivalent typed-text flow passes and
+the backend endpoints work end-to-end. Phase 12's new tests (4, in
+`conversation_screen_test.dart`): a new conversation is created only when none exists to resume;
+an existing conversation is resumed with its history instead of recreated; the high-risk
+confirmation dialog appears, resists tap-outside-to-dismiss, and is dismissed only by
+"I understand"; a non-high-risk assessment shows no dialog. A debugging note for future
+reference: `_init()`'s STT-availability check can hang indefinitely in the widget-test sandbox
+(no platform channel mock), so anything that must render before that resolves — like resumed
+message history — has to trigger its own `setState` rather than relying on a rebuild at the end
+of `_init()`.
 
 **STT provider decision:** implemented via Flutter's `speech_to_text` package, which wraps each
 platform's native/on-device speech recognition (Android `SpeechRecognizer`, iOS `Speech`

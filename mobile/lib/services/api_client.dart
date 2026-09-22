@@ -75,8 +75,34 @@ class ApiClient {
     return (jsonDecode(response.body) as Map<String, dynamic>)['id'] as String;
   }
 
-  /// Sends [content] as a user message and returns the assistant's (Phase 2: scaffold) reply.
-  Future<String> sendMessage({required String conversationId, required String content}) async {
+  /// ux.session_auto_preserved / resume_previous_consultation — ordered newest-first by the
+  /// backend (backend/app/api/conversations.py), so `.first` is "the conversation to resume".
+  Future<List<Map<String, dynamic>>> listConversations() async {
+    final response = await http.get(Uri.parse('$baseUrl/conversations'), headers: await _authHeaders());
+    if (response.statusCode != 200) {
+      throw ApiException('failed to list conversations: ${response.statusCode} ${response.body}');
+    }
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  Future<List<Map<String, dynamic>>> listMessages({required String conversationId}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/messages').replace(queryParameters: {'conversation_id': conversationId}),
+      headers: await _authHeaders(),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException('failed to list messages: ${response.statusCode} ${response.body}');
+    }
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Sends [content] as a user message. As of Phase 12, the reply is either the next
+  /// follow-up question, or — once nothing more is missing — a real validated Assessment
+  /// (architecture.canonical_pipeline's EVIDENCE_RETRIEVAL through OUTPUT_VALIDATION, run
+  /// automatically; see backend/app/api/messages.py). [SendMessageResult.isAssessment]
+  /// distinguishes the two so the UI can offer TTS playback and, for a high-risk result, a
+  /// confirmation prompt (ux.confirmation_required_when: high_risk_recommendation_considered).
+  Future<SendMessageResult> sendMessage({required String conversationId, required String content}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/messages'),
       headers: await _authHeaders(),
@@ -86,7 +112,12 @@ class ApiClient {
       throw ApiException('failed to send message: ${response.statusCode} ${response.body}');
     }
     final body = jsonDecode(response.body) as Map<String, dynamic>;
-    return (body['assistant_message'] as Map<String, dynamic>)['content'] as String;
+    return SendMessageResult(
+      content: (body['assistant_message'] as Map<String, dynamic>)['content'] as String,
+      isAssessment: body['is_assessment'] as bool? ?? false,
+      assessmentStatus: body['assessment_status'] as String?,
+      escalation: body['escalation'] as String?,
+    );
   }
 
   /// Registers a device (see backend/app/api/devices.py) and returns its id. Used by
@@ -128,26 +159,11 @@ class ApiClient {
     return jsonDecode(response.body) as Map<String, dynamic>;
   }
 
-  /// Fetches a validated Assessment (backend/app/reasoning/schema.py, gated by
-  /// backend/app/validation/validator.py) for the given conversation. Text is always the
-  /// primary response channel — this must succeed independently of whether audio playback via
-  /// [fetchAssessmentSpeech] is ever attempted (ux.accessibility.text_always_available).
-  Future<Map<String, dynamic>> getAssessment({required String conversationId}) async {
-    final response = await http.post(
-      Uri.parse('$baseUrl/assessment'),
-      headers: await _authHeaders(),
-      body: jsonEncode({'conversation_id': conversationId}),
-    );
-    if (response.statusCode != 200) {
-      throw ApiException('failed to get assessment: ${response.statusCode} ${response.body}');
-    }
-    return jsonDecode(response.body) as Map<String, dynamic>;
-  }
-
-  /// Fetches WAV audio for the same validated Assessment from POST /assessment/speech
-  /// (backend/app/api/assessment.py) — Phase 11's voice_pipeline VALIDATED_TEXT -> TTS step.
-  /// A genuinely optional companion to [getAssessment]: a 503 here (TTS engine unavailable)
-  /// must never prevent the text response from already being shown.
+  /// Re-runs the same validated pipeline as [sendMessage]'s assessment turn and returns WAV
+  /// audio of its result, from POST /assessment/speech (backend/app/api/assessment.py) —
+  /// Phase 11's voice_pipeline VALIDATED_TEXT -> TTS step. A genuinely optional companion:
+  /// a 503 here (TTS engine unavailable) must never prevent the text response — already shown
+  /// via [sendMessage] — from being available.
   Future<Uint8List> fetchAssessmentSpeech({required String conversationId}) async {
     final response = await http.post(
       Uri.parse('$baseUrl/assessment/speech'),
@@ -167,4 +183,16 @@ class ApiException implements Exception {
 
   @override
   String toString() => 'ApiException: $message';
+}
+
+class SendMessageResult {
+  SendMessageResult({required this.content, required this.isAssessment, this.assessmentStatus, this.escalation});
+
+  final String content;
+  final bool isAssessment;
+  final String? assessmentStatus;
+  final String? escalation;
+
+  /// ux.confirmation_required_when: high_risk_recommendation_considered.
+  bool get isHighRisk => assessmentStatus == 'urgent' || assessmentStatus == 'emergency';
 }

@@ -11,17 +11,15 @@ PERMITTED_ACTIONS = frozenset(
     {"ASK_QUESTION", "GET_VITAL", "RETRIEVE_HISTORY", "RETRIEVE_EVIDENCE", "RUN_ASSESSMENT", "ESCALATE", "RESPOND"}
 )
 
-# Of those, the ones with a real backing subsystem today. GET_VITAL needs Phase 9,
-# RETRIEVE_EVIDENCE needs Phase 5, RUN_ASSESSMENT needs Phase 6, ESCALATE needs Phase 7.
-# RETRIEVE_HISTORY isn't a separate action here because history is already folded into
-# `state` by app/patient_state/assembler.py before this module ever runs.
-_IMPLEMENTED_ACTIONS = frozenset({"ASK_QUESTION", "RESPOND"})
-
-NO_FURTHER_QUESTIONS_MESSAGE = (
-    "Thanks — I don't have any more questions for now.\n\n"
-    "(This is still a placeholder response. MEDAI does not yet provide a clinical assessment "
-    "from what you've told me — that capability comes in a later development phase.)"
-)
+# Of those, the ones with a real backing subsystem today. RUN_ASSESSMENT's pipeline
+# (Phases 5-8) is real as of Phase 12, wired into POST /messages (app/api/messages.py) rather
+# than here — this module stays deliberately free of DB/evidence/safety dependencies (Phase 4's
+# separation of concerns), so it can only decide THAT assessment is the next action, not run it.
+# GET_VITAL has no manual-entry conversational trigger yet, ESCALATE has no manager-level
+# detection ahead of running the assessment itself. RETRIEVE_HISTORY isn't a separate action
+# here because history is already folded into `state` by app/patient_state/assembler.py before
+# this module ever runs.
+_IMPLEMENTED_ACTIONS = frozenset({"ASK_QUESTION", "RUN_ASSESSMENT"})
 
 _PHRASING_SYSTEM_PROMPT = (
     "You turn a plain description of missing information into a single, short, natural "
@@ -42,7 +40,7 @@ def select_action(items: list[MissingInfoItem]) -> str:
     LLM-proposed action) must be validated the same way before being acted on.
     """
 
-    action = "ASK_QUESTION" if items else "RESPOND"
+    action = "ASK_QUESTION" if items else "RUN_ASSESSMENT"
     return validate_action(action)
 
 
@@ -69,12 +67,17 @@ async def _phrase_question(item: MissingInfoItem, llm: LLMProvider) -> str:
     return f"Could you tell me {item.prompt_hint}?"
 
 
-async def generate_reply(llm: LLMProvider, state: PatientState) -> str:
+async def generate_reply(llm: LLMProvider, state: PatientState) -> str | None:
     """conversation_manager.flow steps 3-6: identify missing info, decide the next action,
     and — if it's ASK_QUESTION — phrase the highest-priority one
     (conversation_manager.question_priority order, already applied by identify_missing_info).
     Natural phrasing is best-effort via the LLM; a deterministic template is always available,
     so this works with or without an LLM provider configured.
+
+    Returns None once nothing more is missing (action == RUN_ASSESSMENT) — the caller
+    (app/api/messages.py) is then responsible for actually running that pipeline, which needs
+    dependencies (DB, evidence retrieval, the safety engine) this function deliberately doesn't
+    have.
     """
 
     items = identify_missing_info(state)
@@ -82,4 +85,4 @@ async def generate_reply(llm: LLMProvider, state: PatientState) -> str:
 
     if action == "ASK_QUESTION":
         return await _phrase_question(items[0], llm)
-    return NO_FURTHER_QUESTIONS_MESSAGE
+    return None

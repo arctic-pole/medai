@@ -9,16 +9,21 @@ class ChatEntry {
   final String role; // user | assistant
   final String text;
 
-  /// True for a validated Assessment summary (see getAssessment/fetchAssessmentSpeech) — the
-  /// only kind of message this screen offers a Play button for, per voice_pipeline: TTS must
-  /// only ever speak text that has passed get_validated_output() on the backend, never a plain
-  /// Phase 2 scaffold reply.
+  /// True when this reply is a real validated Assessment (backend/app/api/messages.py sets
+  /// `is_assessment` once nothing more is missing to ask) rather than a follow-up question —
+  /// the only kind of message this screen offers a Play button for, per voice_pipeline: TTS
+  /// must only ever speak text that has passed get_validated_output() on the backend.
   final bool isAssessment;
 }
 
-/// Phase 2: proves the mic -> STT -> API -> UI loop (medai_spec.yaml voice_pipeline /
-/// architecture.canonical_pipeline, up through TEXT_RESPONSE). No medical reasoning happens
-/// here yet — see app/conversation/stub_reply.py on the backend.
+/// The full architecture.canonical_pipeline, driven entirely by this one chat screen
+/// (ux.paradigm: "CHAT + VOICE, not FORM + DASHBOARD") — mic/typed input -> STT ->
+/// conversation_manager's follow-up questions -> once nothing more is missing, the real
+/// EVIDENCE_RETRIEVAL -> CLINICAL_REASONING -> DETERMINISTIC_SAFETY -> OUTPUT_VALIDATION
+/// pipeline runs automatically (backend/app/api/messages.py) -> TEXT_RESPONSE, with optional
+/// TTS playback for that result (Phase 11/12). There is no separate "get assessment" screen or
+/// button — the conversation itself is the interface (ux.user_must_not_be_required_to:
+/// manually_construct_a_report).
 ///
 /// Voice is the primary input (ux.voice_first), but per ux.accessibility's
 /// text_always_available requirement, typed text is always an equally valid way to send a
@@ -48,7 +53,6 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _listening = false;
   bool _sending = false;
   bool _speechAvailable = false;
-  bool _fetchingAssessment = false;
   int? _speakingIndex;
   String? _error;
 
@@ -63,11 +67,36 @@ class _ConversationScreenState extends State<ConversationScreen> {
 
   Future<void> _init() async {
     try {
-      _conversationId = await _apiClient.createConversation();
+      // ux.session_auto_preserved / resume_previous_consultation: resume the most recent
+      // conversation rather than always starting a new one, so a patient's consultation
+      // survives closing and reopening the app. Historical messages are shown as plain text —
+      // whether a past assistant reply was itself a validated Assessment isn't persisted on
+      // the Message row (see backend/app/schemas/conversation.py), so Play/high-risk-confirm
+      // affordances are only offered for a message received in the current live session.
+      final conversations = await _apiClient.listConversations();
+      if (conversations.isNotEmpty) {
+        _conversationId = conversations.first['id'] as String;
+        final history = await _apiClient.listMessages(conversationId: _conversationId!);
+        if (mounted) {
+          setState(() {
+            _messages.addAll(
+              history.map((m) => ChatEntry(role: m['role'] as String, text: m['content'] as String)),
+            );
+          });
+        }
+        _scrollToBottom();
+      } else {
+        _conversationId = await _apiClient.createConversation();
+      }
     } catch (e) {
       setState(() => _error = 'Could not reach MEDAI backend: $e');
       return;
     }
+
+    // Resumed/created conversation is now usable even if STT setup below hangs or fails —
+    // the mic/STT path degrades independently and must never block text availability
+    // (ux.accessibility.text_always_available).
+    if (mounted) setState(() {});
 
     try {
       // No platform implementation is registered in a headless/widget-test environment —
@@ -124,36 +153,46 @@ class _ConversationScreenState extends State<ConversationScreen> {
     _textController.clear();
     _scrollToBottom();
 
+    SendMessageResult? result;
     try {
-      final reply = await _apiClient.sendMessage(conversationId: _conversationId!, content: text);
-      setState(() => _messages.add(ChatEntry(role: 'assistant', text: reply)));
+      // Phase 12: once nothing more is missing, this reply is a real validated Assessment
+      // (architecture.canonical_pipeline run automatically), not a scaffold — the conversation
+      // itself is the only interface; there is no separate "get assessment" action to take.
+      result = await _apiClient.sendMessage(conversationId: _conversationId!, content: text);
+      setState(() => _messages.add(ChatEntry(role: 'assistant', text: result!.content, isAssessment: result.isAssessment)));
     } catch (e) {
       setState(() => _error = 'Could not send message: $e');
     } finally {
       setState(() => _sending = false);
       _scrollToBottom();
     }
+
+    // Shown only once _sending is back to false, so the confirmation dialog is never stuck
+    // behind an indefinitely-animating "sending" indicator.
+    if (result != null && result.isHighRisk && mounted) {
+      await _showHighRiskConfirmation(result.escalation ?? result.content);
+    }
   }
 
-  /// Fetches a real validated Assessment (POST /assessment) and shows its summary as a new
-  /// message — text first, always, independent of whether audio is ever requested.
-  Future<void> _getAssessment() async {
-    if (_conversationId == null || _fetchingAssessment) return;
-    setState(() {
-      _fetchingAssessment = true;
-      _error = null;
-    });
-    try {
-      final assessment = await _apiClient.getAssessment(conversationId: _conversationId!);
-      setState(() => _messages.add(
-            ChatEntry(role: 'assistant', text: assessment['summary'] as String, isAssessment: true),
-          ));
-    } catch (e) {
-      setState(() => _error = 'Could not get assessment: $e');
-    } finally {
-      setState(() => _fetchingAssessment = false);
-      _scrollToBottom();
-    }
+  /// ux.confirmation_required_when: high_risk_recommendation_considered. A modal, non-dismiss-
+  /// by-tapping-outside dialog — the user must explicitly acknowledge a high-risk result before
+  /// continuing, rather than it just scrolling past as an ordinary chat bubble.
+  Future<void> _showHighRiskConfirmation(String escalationText) async {
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        icon: const Icon(Icons.warning_amber_rounded),
+        title: const Text('Please read carefully'),
+        content: Text(escalationText),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('I understand'),
+          ),
+        ],
+      ),
+    );
   }
 
   /// Plays the audio for the assessment message at [index]. Interrupts (barge-in) whatever was
@@ -210,18 +249,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('Talk to Health AI'),
-        actions: [
-          IconButton(
-            tooltip: 'Get assessment',
-            icon: _fetchingAssessment
-                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
-                : const Icon(Icons.health_and_safety_outlined),
-            onPressed: _fetchingAssessment ? null : _getAssessment,
-          ),
-        ],
-      ),
+      appBar: AppBar(title: const Text('Talk to Health AI')),
       body: Column(
         children: [
           if (_error != null)

@@ -1,8 +1,8 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This reflects Phase 11 (TTS) on top
-> of Phase 10's health platform integration, Phase 9's vital ingestion, and Phase 8's
-> `POST /assessment`.
+> Filled in incrementally as each AI-related phase lands. This reflects Phase 12 (complete
+> pipeline) on top of Phase 11's TTS, Phase 10's health platform integration, Phase 9's vital
+> ingestion, and Phase 8's `POST /assessment`.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -28,7 +28,12 @@ real health platform (Google Health Connect), not just manual entry — see "Hea
 integration (Phase 10)" below. As of Phase 11, `OPTIONAL_TTS` is also built — a genuinely
 optional companion to `TEXT_RESPONSE`, reachable via `POST /assessment/speech`, gated so it can
 only ever speak text that has already been through `get_validated_output()` — see "TTS (Phase
-11)" below.
+11)" below. As of Phase 12, this entire chain — `FOLLOW_UP_QUESTIONS` through `TEXT_RESPONSE`
+— is reachable from **a single conversational loop**, `POST /messages`
+(`app/api/messages.py`): once nothing more is missing to ask, that same endpoint runs
+`EVIDENCE_RETRIEVAL` through `OUTPUT_VALIDATION` automatically and returns the result as the
+assistant's reply, rather than requiring a separate action — see "Complete pipeline integration
+(Phase 12)" below.
 
 ## Provider abstraction
 
@@ -120,12 +125,20 @@ Phase 2's echo scaffold, exactly as that scaffold's own docstring said it would.
   measurements need the vital/device subsystem (Phase 9) — this module must not invent either.
 - **`conversation_manager.permitted_actions` arbiter**: `app/conversation/manager.py:
   validate_action` is the single application-side gate — per `conversation_manager.rule`
-  ("LLM may propose an action; application determines whether it is permitted"). Today only
-  `ASK_QUESTION`/`RESPOND` are implemented; `GET_VITAL`/`RETRIEVE_EVIDENCE`/`RUN_ASSESSMENT`/
-  `ESCALATE` are recognized as valid `permitted_actions` but rejected with
-  `NotImplementedError` until their backing subsystem (Phase 9/5/6/7 respectively) exists.
-  `RETRIEVE_HISTORY` isn't a separate runtime action here because history is already folded
-  into `PatientState` before this module runs.
+  ("LLM may propose an action; application determines whether it is permitted"). As of Phase 12,
+  `ASK_QUESTION` and `RUN_ASSESSMENT` are implemented; `GET_VITAL`/`RETRIEVE_EVIDENCE`/`ESCALATE`
+  are recognized as valid `permitted_actions` but rejected with `NotImplementedError` — there's
+  no manager-level detection ahead of running the assessment itself. `RETRIEVE_HISTORY` isn't a
+  separate runtime action here because history is already folded into `PatientState` before this
+  module runs.
+  **Correction to how this worked before Phase 12**: `select_action` used to return `"RESPOND"`
+  once nothing was missing, and `generate_reply` returned a hardcoded placeholder string
+  (`NO_FURTHER_QUESTIONS_MESSAGE`, now removed) saying a real assessment "comes in a later
+  development phase." That phase has arrived: `select_action` now returns `"RUN_ASSESSMENT"`
+  instead, and `generate_reply` returns `None` in that case — signaling its caller
+  (`POST /messages`) to actually run the pipeline, since `app/conversation/manager.py`
+  deliberately has no DB/evidence/safety access to do that itself (Phase 4's separation of
+  concerns, preserved).
 
 ## Medical knowledge / RAG (Phase 5)
 
@@ -583,6 +596,92 @@ against the `AudioBackend` fake — a real device/emulator audio smoke test, lik
 not performed for TTS specifically, given Phase 10 already established Android build/run works
 on this machine).
 
+## Complete pipeline integration (Phase 12)
+
+**Scope decision (user-confirmed)**: "core pipeline integration" rather than attempting all 15
+`ux.screens` in one pass. Only 2 of 15 (`home`, `conversation`) existed before this phase; this
+phase wires the *pipeline* completely — the spec's own pass criterion ("Complete end-to-end
+demonstration works") — without building the remaining screens (onboarding, consent,
+patient_profile, medical_history, medications, allergies, measurements, evidence,
+safety_warnings, measurement_history, settings), which stay explicitly deferred, not silently
+skipped.
+
+- **`POST /messages` now runs the real pipeline automatically** (`app/api/messages.py`) —
+  the single biggest change this phase makes. Previously, once `identify_missing_info` found
+  nothing left to ask, `app/conversation/manager.py` returned a hardcoded placeholder message
+  saying a real assessment "comes in a later development phase." That phase is this one:
+  `generate_reply()` now returns `None` in that case, and the endpoint itself runs
+  `build_evidence_package` → `evaluate_safety` → `get_validated_output` — the exact same
+  pipeline `POST /assessment` runs — and returns the resulting `Assessment.summary` (plus
+  `escalation`, if present) as the assistant's reply. `select_action` was also updated to
+  return `"RUN_ASSESSMENT"` instead of `"RESPOND"` once nothing is missing, matching the spec's
+  own action name rather than a generic placeholder. `MessageExchangeResponse` gained
+  `is_assessment`/`assessment_status`/`escalation` fields so the mobile client can tell the two
+  reply kinds apart without guessing from text content.
+- **There is no longer a separate "get assessment" action anywhere in the mobile app.** Phase
+  11's standalone app-bar button and `ApiClient.getAssessment()` are both removed — the
+  conversation itself is the only interface a patient interacts with
+  (`ux.paradigm`: "CHAT + VOICE, not FORM + DASHBOARD"; `ux.user_must_not_be_required_to`:
+  `manually_construct_a_report`). `POST /assessment` and `POST /assessment/speech` still exist
+  as the endpoints backing this (and remain independently testable/callable), but the mobile UI
+  now reaches the assessment pipeline only through `POST /messages`.
+- **Session persistence** (`ux.session_auto_preserved`, `resume_previous_consultation`):
+  `ConversationScreen._init()` calls the (already-existing) `GET /conversations`, which orders
+  results newest-first, and resumes `.first` — loading its history via `GET /messages` — instead
+  of always creating a new conversation. Only creates a new one when the patient truly has none
+  yet. **Documented limitation**: whether a historical assistant message was itself a validated
+  Assessment isn't persisted on the `Message` row (recomputed fresh per turn, not stored), so a
+  resumed conversation's past assessment replies render as plain text — the Play button and
+  high-risk confirmation are only offered for a message received in the current live session.
+- **`automatic_profile_memory`**: already true by construction since Phase 3 —
+  `identify_missing_info` only asks about fields genuinely absent from the DB
+  (`app/patient_state/assembler.py` assembles profile/history/allergies/medications
+  automatically on every turn) — confirmed still holding, not new work this phase.
+- **Confirmation prompts** (`ux.confirmation_required_when`, 5 triggers) — **1 of 5 has real
+  backend signal and a real mobile surface today; the other 4 are honestly deferred, not
+  fabricated**:
+  - `high_risk_recommendation_considered` — **built**. When `assessment_status` is `"urgent"`
+    or `"emergency"` (`SendMessageResult.isHighRisk`), `ConversationScreen` shows a modal,
+    non-dismissible `AlertDialog` with the escalation text and a required "I understand"
+    acknowledgment before the user can continue — real signal (`Assessment.status`, gated by
+    `get_validated_output`) driving a real UI element.
+  - `measurement_appears_incorrect` — **deferred**. Real backend signal exists
+    (`MEASUREMENT_UNRELIABLE`, `POST /vitals`'s 422 path, Phase 9), but there is no mobile
+    manual-vital-entry screen to attach a confirmation to (the `measurements` screen is one of
+    the 13 deferred per this phase's scope decision) — Health Connect sync bypasses this path
+    entirely (readings are accepted/rejected silently, no user prompt in that flow).
+  - `medication_or_allergy_uncertain`, `critical_medical_fact_is_ambiguous` — **deferred, no
+    real signal exists**. Detecting *ambiguity* in what a patient said (as opposed to detecting
+    that a fact is simply missing, which `identify_missing_info` already does) needs new
+    backend logic nothing in this codebase implements yet. Building a confirmation dialog with
+    no real detection behind it would fabricate a capability, not defer one — not done.
+  - `consent_sensitive_action_required` — **deferred**. No consent flow/screen exists yet
+    (Phase 1's `consent` screen is one of the deferred 13).
+- **Zero DB schema changes.** Everything above is response-shape and application-logic only —
+  no migration this phase.
+
+**Verified live**, not just against fakes: against a running dev server, a full real HTTP
+sequence — register, fill profile/history/allergies/medications, create a conversation, send
+one message — correctly triggered `RUN_ASSESSMENT` on the very first message (since nothing was
+missing) and returned `is_assessment: true`, `assessment_status: "caution"`,
+`escalation: null`, with the real `SAFE_FALLBACK` text, in 0.3 seconds (LLM deliberately
+unconfigured for this run — see below). `GET /conversations` and `GET /messages` against that
+same account confirmed exactly the data `ConversationScreen`'s resume path depends on: the
+conversation listed newest-first, and its two messages in the correct order. This is a genuine,
+fast, real round trip through the new endpoint logic, DB writes included.
+
+**A real Gemini call was also attempted and is worth documenting honestly**: the same sequence,
+run first with a real `GEMINI_API_KEY` configured, triggered a real clinical-reasoning call that
+hit its documented 30s timeout on attempt 1 and then did not resolve within several minutes —
+well beyond the ~2-minute worst case documented in Phase 8/9 for the *failure* path. `netstat`
+confirmed the server process held a live TLS connection to a Google IP the entire time (not a
+local deadlock), so this reads as unusually slow/degraded real API behavior on the day this was
+tested, not a bug introduced by Phase 12's own changes — but it was not root-caused further, and
+is flagged here rather than quietly worked around. The fast, LLM-unconfigured run above verifies
+the same endpoint logic and response shape without depending on Gemini's response time.
+`test_send_message_runs_real_assessment_when_nothing_left_to_ask` (fakes-based) is what actually
+proves a real Gemini-shaped success response flows through correctly.
+
 ## The assessment endpoint
 
 `POST /assessment` (`app/api/assessment.py`) chains everything above together for the first
@@ -626,13 +725,18 @@ legitimate `output_schema` response, not an error.
 
 The conversation manager's `emergency_indicators` and `required_measurements` question tiers are
 still unpopulated (see the conversation manager section above) — Phase 7's vital-threshold rules
-and Phase 9's vitals now both exist, but this module hasn't been wired to either yet. Wiring
-safety_engine/medication safety into the *live conversation loop* itself (as opposed to the
-dedicated `/assessment` endpoint) is still separate, undone work. Health Connect is Android-only
-(Phase 10); Apple HealthKit and other platforms (Fitbit, Withings) remain unimplemented — no
-iOS/Mac environment exists on this machine to build HealthKit against, and no cloud-platform
-developer account was set up for the others. Background/automatic sync (as opposed to the
-explicit "Sync Health Connect data" button) is not built — matches the MVP scope decided for
-this phase, not a gap. TTS (Phase 11) has no streaming synthesis and isn't wired into the live
-conversation loop's automatic reply path — it's reachable only via the explicit "Get assessment"
-action, matching this phase's own MVP scope, same as `/assessment` itself before Phase 12.
+and Phase 9's vitals now both exist, but this module hasn't been wired to either yet (they'd
+extend `identify_missing_info`'s priority tiers, not the RUN_ASSESSMENT wiring Phase 12 added,
+which is a separate concern). Health Connect is Android-only (Phase 10); Apple HealthKit and
+other platforms (Fitbit, Withings) remain unimplemented — no iOS/Mac environment exists on this
+machine to build HealthKit against, and no cloud-platform developer account was set up for the
+others. Background/automatic Health Connect sync (as opposed to the explicit button) is not
+built — matches the MVP scope decided for that phase, not a gap. TTS has no streaming synthesis,
+and — unchanged by Phase 12 — audio playback is still explicit-tap-only, never automatic; only
+the *text* reply became automatic this phase. 13 of the 15 `ux.screens` (onboarding, consent,
+patient_profile, medical_history, medications, allergies, measurements, evidence,
+safety_warnings, measurement_history, settings) remain unbuilt on mobile — a deliberate Phase 12
+scope decision (see "Complete pipeline integration (Phase 12)" above), not an oversight; their
+backend APIs already exist from Phase 1 onward. 4 of 5 `ux.confirmation_required_when` triggers
+have no real detection signal or mobile surface yet (only `high_risk_recommendation_considered`
+is built) — see the same section for exactly why each is deferred rather than faked.

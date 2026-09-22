@@ -53,43 +53,63 @@
   - WHO pulse oximetry manual: https://cdn.who.int/media/docs/default-source/patient-safety/pulse-oximetry/who-ps-pulse-oxymetry-training-manual-en.pdf — **direct primary-source fetch succeeded**; exact thresholds quoted in `app/safety/vital_rules.py`.
   - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm — **direct fetch succeeded**; exact quote in `app/safety/vital_rules.py`. No dangerous-fever/hypothermia threshold is stated on this page, so none is encoded as a rule.
 
-## Current phase: 11 — TTS
+## Current phase: 12 — Complete Pipeline
 
-- **`POST /assessment/speech` is now live** (`app/api/assessment.py`) — `voice_pipeline.flow`'s
-  `VALIDATED_TEXT → TTS → SPEAKER` step. `TextToSpeechProvider` (`app/providers/tts/`) is the
-  `architecture.provider_interfaces` abstraction; concrete choice is **pyttsx3** (offline, no
-  API key — see "Provider/source decisions" above). See `docs/AI_PIPELINE.md` for the full
-  design.
-- **"TTS must never receive unvalidated medical output" is enforced at the type level, not by
-  convention**: `ValidatedText` (`app/tts/schema.py`) can only be constructed via a
-  sentinel-token-guarded private factory, and `TextToSpeechProvider.speak()` — the only public
-  entry point, non-abstract, implemented once on the base class — requires that type and
-  re-checks it at runtime. The only legitimate path to a `ValidatedText` is
-  `app/tts/speech.py:synthesize_validated_response()`, which doesn't accept a pre-built
-  `Assessment` as an argument (that would let a caller pass fabricated text) and always calls
-  `get_validated_output()` itself first.
-- **Verified by test, not just by design**: when validation exhausts its correction attempts
-  and resolves to `SAFE_FALLBACK`, that fallback text — never either rejected attempt's
-  content — is what reaches TTS (`test_tts_speech.py`). A TTS-engine failure returns `503
-  TTS_ERROR` from a *separate* endpoint (`/assessment/speech`, not a field on `/assessment`), so
-  it can never affect the text endpoint's own success — proven by a test that hits both in the
-  same request cycle.
-- **Mobile playback** (`mobile/lib/services/speech_playback_service.dart`, via `audioplayers`):
-  play/stop/barge-in (a second `play()`, or activating the mic, always interrupts current
-  playback — `voice_pipeline.rules`) and graceful failure (an inline error, never removing the
-  already-shown text). Wired into `ConversationScreen`: text is always shown before audio is
-  ever requested, and Play is a separate, explicit, non-automatic action.
-- **Verified live, not just against fakes**: a real HTTP call to a running dev server hit
-  Gemini's real (expected, already-exhausted-today) rate limit, correctly failed closed to
-  `SAFE_FALLBACK`, and `POST /assessment/speech` returned a genuine `200 OK` with a real 376KB
-  WAV file (`RIFF ... WAVE audio, Microsoft PCM, 16 bit, mono 22050 Hz`) — real pyttsx3 synthesis
-  over a real HTTP response.
-- **Known gaps, stated plainly**: no streaming synthesis (pyttsx3 has no streaming API); no
-  automated test exercises mobile Play against a *real* platform audio backend, only the
-  `AudioBackend` fake (unlike Phase 10, no live Android emulator run was done for TTS
-  specifically); TTS is reachable only via an explicit "Get assessment" action, not wired into
-  the automatic conversation-reply flow — matches this phase's MVP scope, same as `/assessment`
-  itself before Phase 12.
+- **Scope decision (user-confirmed)**: "core pipeline integration," not all 15 `ux.screens` in
+  one pass (only `home`/`conversation` existed before this phase). See
+  `docs/AI_PIPELINE.md`'s "Complete pipeline integration (Phase 12)" section for the full
+  breakdown of what that means concretely.
+- **`POST /messages` now runs the real pipeline automatically.** Once nothing more is missing
+  to ask, `app/api/messages.py` runs the same `build_evidence_package` → `evaluate_safety` →
+  `get_validated_output` chain `POST /assessment` runs, and returns the result as the
+  assistant's reply (`is_assessment`/`assessment_status`/`escalation` on the response tell the
+  mobile client which kind of reply it got). **Correction to how this worked before**:
+  `app/conversation/manager.py` used to return a hardcoded placeholder ("a real assessment comes
+  in a later development phase") once nothing was missing — that placeholder, and the `RESPOND`
+  action name, are both retired; `select_action` now returns `RUN_ASSESSMENT`, matching the
+  spec's own name.
+- **The standalone "Get assessment" button (Phase 11) is removed.** There is no longer any
+  mobile UI action separate from sending a message — the conversation itself is the only
+  interface (`ux.paradigm`, `ux.user_must_not_be_required_to`).
+- **Session persistence**: `ConversationScreen` now resumes the most recent conversation
+  (`GET /conversations`, already ordered newest-first) instead of always creating a new one.
+  Historical assistant messages render as plain text — whether a past reply was itself a
+  validated Assessment isn't persisted on the `Message` row, so Play/high-risk-confirmation
+  affordances only apply to messages received in the current live session.
+- **1 of 5 `ux.confirmation_required_when` triggers built** (`high_risk_recommendation_considered`
+  — a modal, non-dismissible confirmation for an `urgent`/`emergency` assessment); the other 4
+  honestly deferred, not faked, because no real detection signal and/or mobile surface exists
+  for them yet — see `docs/AI_PIPELINE.md` for exactly why each one specifically is deferred.
+- **Verified live, not just against fakes**: a real HTTP sequence (register → fill
+  profile/history/allergies/medications → create conversation → send one message) correctly
+  triggered `RUN_ASSESSMENT` immediately and returned the right response shape in 0.3s (LLM
+  deliberately unconfigured for that run); `GET /conversations`/`GET /messages` against the same
+  account confirmed exactly the data the mobile resume path depends on. **A real Gemini call was
+  also attempted and took unusually long** (didn't resolve within several minutes, well beyond
+  the ~2-minute documented worst case) — `netstat` confirmed a genuine live connection to Google
+  the whole time, not a local hang, but this wasn't root-caused further; flagged honestly rather
+  than silently worked around. The fakes-based `test_send_message_runs_real_assessment_...` test
+  is what actually proves a successful real-shaped Gemini response flows through correctly.
+- **152/152 backend tests** (2 new/updated conversation-flow tests plus the pre-existing suite,
+  all still green after the `manager.py` changes), **19/19 mobile tests** (4 new: session
+  resume, automatic-assessment-as-reply, and the high-risk confirmation dialog's
+  show/tap-outside-doesn't-dismiss/acknowledge behavior).
+
+## Phase 11 — TTS (superseded above for the "Get assessment" button, which no longer exists)
+
+`POST /assessment/speech` (`app/api/assessment.py`) — `voice_pipeline.flow`'s
+`VALIDATED_TEXT → TTS → SPEAKER` step. `TextToSpeechProvider` (`app/providers/tts/`) is the
+`architecture.provider_interfaces` abstraction; concrete choice is **pyttsx3** (offline, no API
+key). "TTS must never receive unvalidated medical output" is enforced at the type level:
+`ValidatedText` (`app/tts/schema.py`) can only be constructed via a sentinel-token-guarded
+private factory, and `TextToSpeechProvider.speak()` requires that type. The only legitimate path
+to one is `synthesize_validated_response()`, which always calls `get_validated_output()` itself
+first rather than accepting a pre-built `Assessment`. Verified by test that `SAFE_FALLBACK`,
+never rejected content, is what reaches TTS after a failed validation, and verified live with a
+real `200 OK` returning a genuine 376KB WAV file. Mobile playback
+(`speech_playback_service.dart`, via `audioplayers`) handles play/stop/barge-in and graceful
+failure. As of Phase 12, the Play button lives on assessment messages inline in the
+conversation, not behind a separate action.
 
 ## Phase 10 — Health Platform Integration (superseded above for TTS)
 
@@ -195,14 +215,16 @@ Reranking is a no-op (plain cosine-similarity order) — no reranker model was s
   is now a verified-working target** (real APK built, installed, and run on a real Android
   runtime), alongside web (Chrome). Xcode/macOS still don't exist on this machine, so iOS remains
   unverified. Mobile platform scope (Android-only vs Android+iOS) is still an open decision.
-- `POST /messages` conducts a structured interview (Phase 4) working with or without an LLM
-  configured. `emergency_indicators`/`required_measurements` question tiers are still
-  unpopulated — Phase 7's sourced emergency rules and Phase 9's real vitals both now exist, but
-  neither is wired into `app/conversation/` yet, only into `/assessment`. Mobile doesn't call
+- `POST /messages` conducts a structured interview (Phase 4) and, once nothing more is missing,
+  automatically runs the real assessment pipeline as the reply (Phase 12) — working with or
+  without an LLM configured either way. `emergency_indicators`/`required_measurements` question
+  *tiers* are still unpopulated in `identify_missing_info`'s priority order — Phase 7's sourced
+  emergency rules and Phase 9's real vitals both now feed the assessment pipeline itself, but
+  neither is used to decide *what question to ask next*. Mobile doesn't call
   `/symptoms/extract`, so `high_impact_missing_information` never triggers in the live mobile
-  flow. Mobile *does* now call `/vitals/sync` (Phase 10's "Sync Health Connect data" button) and
-  `/assessment`/`/assessment/speech` (Phase 11's "Get assessment" action + Play/Stop), but both
-  are standalone actions, not wired into the automatic conversation-reply loop.
+  flow. Mobile also calls `/vitals/sync` (Phase 10's "Sync Health Connect data" button) as a
+  standalone action, and `/assessment/speech` (Play/Stop on an assessment message) — the latter
+  is now reached from *within* the conversation, not a separate action, as of Phase 12.
 - Dev-only CORS (`allow_origins=["*"]`) on the backend — must be locked down before any real
   deployment (Phase 13).
 - A `consents` table was added beyond `medai_spec.yaml`'s explicit `database.tables` list, to
