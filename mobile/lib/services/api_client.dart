@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io' show Platform;
+import 'dart:typed_data';
 
 import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
@@ -125,6 +126,38 @@ class ApiClient {
       throw ApiException('failed to sync vitals: ${response.statusCode} ${response.body}');
     }
     return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  /// Fetches a validated Assessment (backend/app/reasoning/schema.py, gated by
+  /// backend/app/validation/validator.py) for the given conversation. Text is always the
+  /// primary response channel — this must succeed independently of whether audio playback via
+  /// [fetchAssessmentSpeech] is ever attempted (ux.accessibility.text_always_available).
+  Future<Map<String, dynamic>> getAssessment({required String conversationId}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/assessment'),
+      headers: await _authHeaders(),
+      body: jsonEncode({'conversation_id': conversationId}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException('failed to get assessment: ${response.statusCode} ${response.body}');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
+  }
+
+  /// Fetches WAV audio for the same validated Assessment from POST /assessment/speech
+  /// (backend/app/api/assessment.py) — Phase 11's voice_pipeline VALIDATED_TEXT -> TTS step.
+  /// A genuinely optional companion to [getAssessment]: a 503 here (TTS engine unavailable)
+  /// must never prevent the text response from already being shown.
+  Future<Uint8List> fetchAssessmentSpeech({required String conversationId}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/assessment/speech'),
+      headers: await _authHeaders(),
+      body: jsonEncode({'conversation_id': conversationId}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException('failed to fetch assessment speech: ${response.statusCode} ${response.body}');
+    }
+    return response.bodyBytes;
   }
 }
 

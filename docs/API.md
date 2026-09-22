@@ -17,21 +17,23 @@ No medical reasoning happens in `POST /messages` (per `phases.2_conversation.con
 carried into Phase 4) — it asks a structured, deterministic follow-up question, not a
 clinical assessment; that starts in Phase 6.
 
-## Phase 6-8 endpoint (assessment) — the first clinical-output endpoint
+## Phase 6-8, 11 endpoints (assessment / speech) — the first clinical-output endpoints
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
 | POST | `/assessment` | bearer | `{conversation_id}` → runs the full internal pipeline (Phase 3 patient state → Phase 5 evidence retrieval → Phase 6 clinical reasoning → Phase 7 safety engine → Phase 8 output validator) and returns a validated `Assessment` (`output_schema`, verbatim field set). 404 if the conversation isn't owned by the caller. Never returns an HTTP error for "the LLM failed" or "the assessment was rejected" — those resolve to the `SAFE_FALLBACK` `Assessment` (still `200`), per `output_validator.on_failure`/`on_validator_failure`. |
+| POST | `/assessment/speech` | bearer | `{conversation_id}` — Phase 11's `voice_pipeline` `VALIDATED_TEXT → TTS → SPEAKER` step. Runs the identical pipeline as `POST /assessment`, then synthesizes speech for the *same, actually-validated* result (never a separate/parallel path that could diverge) and returns `audio/wav` bytes. A TTS-specific failure (engine unavailable) returns `503` with `TTS_ERROR: ...` rather than silent/fake audio — deliberately a separate endpoint from `POST /assessment`, not a field on its response, so this failure can never affect the text endpoint. |
 
-This is the **only** endpoint in the codebase allowed to hand a client anything
-Assessment-shaped — `app/reasoning`, `app/safety`, and `app/validation` were all built
-internal-only across Phases 6-8 specifically because nothing could safely expose them until
-this endpoint's gate (`get_validated_output`) existed. See `docs/AI_PIPELINE.md` for the full
-chain and its known gaps. As of Phase 9, vitals recorded via `POST /vitals` are real — a
-critical vital on record now drives the safety engine to `ESCALATE` inside `/assessment` for
-real (live-verified deterministically; see `docs/AI_PIPELINE.md`). The endpoint's own proposed
-medications still aren't cross-checked against medication safety, since `output_schema`'s
-`medication_information` is free text, not a structured drug list — unchanged, still open.
+These are the **only** endpoints in the codebase allowed to hand a client anything
+Assessment-shaped or its audio — `app/reasoning`, `app/safety`, `app/validation`, and
+`app/providers/tts` were all built internal-only until each phase's own gate
+(`get_validated_output`, and Phase 11's `ValidatedText`/`synthesize_validated_response`) existed
+to release them safely. See `docs/AI_PIPELINE.md` for the full chain and its known gaps. As of
+Phase 9, vitals recorded via `POST /vitals` are real — a critical vital on record now drives the
+safety engine to `ESCALATE` inside both endpoints for real (live-verified deterministically; see
+`docs/AI_PIPELINE.md`). The endpoints' own proposed medications still aren't cross-checked
+against medication safety, since `output_schema`'s `medication_information` is free text, not a
+structured drug list — unchanged, still open.
 
 ## Phase 9-10 endpoints (vitals / devices)
 

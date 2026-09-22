@@ -8,6 +8,7 @@ from app.providers.embeddings.base import EmbeddingProvider
 from app.providers.llm.base import LLMNotConfiguredError, LLMProvider, T
 from app.providers.medical_knowledge.base import MedicalKnowledgeProvider, RawDocument
 from app.providers.medication_db.base import DrugLabel, MedicationDBProvider
+from app.providers.tts.base import TextToSpeechProvider, TTSError
 from app.reasoning.schema import Assessment
 
 
@@ -134,3 +135,23 @@ class FakeMedicationDBProvider(MedicationDBProvider):
 
     async def lookup(self, drug_name: str) -> DrugLabel | None:
         return self._labels.get(drug_name.lower())
+
+
+class FakeTTSProvider(TextToSpeechProvider):
+    """Records every call to _synthesize (so a test can assert exactly what text reached TTS)
+    and returns deterministic fake audio bytes — no real pyttsx3/OS engine call."""
+
+    def __init__(self) -> None:
+        self.synthesized_texts: list[str] = []
+
+    async def _synthesize(self, text: str) -> bytes:
+        self.synthesized_texts.append(text)
+        return f"FAKE_AUDIO:{text}".encode()
+
+
+class FailingTTSProvider(TextToSpeechProvider):
+    """Mirrors Pyttsx3Provider's behavior when the engine is unavailable/fails — fails closed
+    with TTSError, never fabricated audio."""
+
+    async def _synthesize(self, text: str) -> bytes:
+        raise TTSError("simulated TTS engine failure")

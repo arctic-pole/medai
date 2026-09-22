@@ -2,11 +2,18 @@ import 'package:flutter/material.dart';
 import 'package:speech_to_text/speech_to_text.dart' as stt;
 
 import '../services/api_client.dart';
+import '../services/speech_playback_service.dart';
 
 class ChatEntry {
-  ChatEntry({required this.role, required this.text});
+  ChatEntry({required this.role, required this.text, this.isAssessment = false});
   final String role; // user | assistant
   final String text;
+
+  /// True for a validated Assessment summary (see getAssessment/fetchAssessmentSpeech) — the
+  /// only kind of message this screen offers a Play button for, per voice_pipeline: TTS must
+  /// only ever speak text that has passed get_validated_output() on the backend, never a plain
+  /// Phase 2 scaffold reply.
+  final bool isAssessment;
 }
 
 /// Phase 2: proves the mic -> STT -> API -> UI loop (medai_spec.yaml voice_pipeline /
@@ -17,10 +24,13 @@ class ChatEntry {
 /// text_always_available requirement, typed text is always an equally valid way to send a
 /// message — this also makes the flow testable without a live microphone.
 class ConversationScreen extends StatefulWidget {
-  const ConversationScreen({super.key, this.apiClient});
+  const ConversationScreen({super.key, this.apiClient, this.speechPlaybackService});
 
   /// Injectable for widget tests; defaults to a real ApiClient otherwise.
   final ApiClient? apiClient;
+
+  /// Injectable for widget tests; defaults to a real SpeechPlaybackService otherwise.
+  final SpeechPlaybackService? speechPlaybackService;
 
   @override
   State<ConversationScreen> createState() => _ConversationScreenState();
@@ -28,6 +38,7 @@ class ConversationScreen extends StatefulWidget {
 
 class _ConversationScreenState extends State<ConversationScreen> {
   late final ApiClient _apiClient = widget.apiClient ?? ApiClient();
+  late final SpeechPlaybackService _playback = widget.speechPlaybackService ?? SpeechPlaybackService();
   final _speech = stt.SpeechToText();
   final _textController = TextEditingController();
   final _messages = <ChatEntry>[];
@@ -37,12 +48,17 @@ class _ConversationScreenState extends State<ConversationScreen> {
   bool _listening = false;
   bool _sending = false;
   bool _speechAvailable = false;
+  bool _fetchingAssessment = false;
+  int? _speakingIndex;
   String? _error;
 
   @override
   void initState() {
     super.initState();
     _init();
+    _playback.onComplete.listen((_) {
+      if (mounted) setState(() => _speakingIndex = null);
+    });
   }
 
   Future<void> _init() async {
@@ -66,6 +82,11 @@ class _ConversationScreenState extends State<ConversationScreen> {
   }
 
   Future<void> _toggleListening() async {
+    // Barge-in (voice_pipeline.rules: "User must be able to interrupt TTS and continue
+    // speaking") — any attempt to activate the mic interrupts assessment audio currently
+    // playing, unconditionally, before checking whether STT itself is available.
+    await _stopSpeaking();
+
     if (!_speechAvailable) {
       setState(() => _error = 'Speech recognition is not available on this device/browser.');
       return;
@@ -114,6 +135,55 @@ class _ConversationScreenState extends State<ConversationScreen> {
     }
   }
 
+  /// Fetches a real validated Assessment (POST /assessment) and shows its summary as a new
+  /// message — text first, always, independent of whether audio is ever requested.
+  Future<void> _getAssessment() async {
+    if (_conversationId == null || _fetchingAssessment) return;
+    setState(() {
+      _fetchingAssessment = true;
+      _error = null;
+    });
+    try {
+      final assessment = await _apiClient.getAssessment(conversationId: _conversationId!);
+      setState(() => _messages.add(
+            ChatEntry(role: 'assistant', text: assessment['summary'] as String, isAssessment: true),
+          ));
+    } catch (e) {
+      setState(() => _error = 'Could not get assessment: $e');
+    } finally {
+      setState(() => _fetchingAssessment = false);
+      _scrollToBottom();
+    }
+  }
+
+  /// Plays the audio for the assessment message at [index]. Interrupts (barge-in) whatever was
+  /// playing before, including a previous tap on this same button — see
+  /// SpeechPlaybackService.play(). A fetch/playback failure is shown inline; the message's text
+  /// (already on screen) is never affected by it (TTS is optional, never the only channel).
+  Future<void> _playAssessment(int index) async {
+    setState(() {
+      _speakingIndex = index;
+      _error = null;
+    });
+    try {
+      final audio = await _apiClient.fetchAssessmentSpeech(conversationId: _conversationId!);
+      await _playback.play(audio);
+      // _speakingIndex is cleared by the onComplete listener once playback actually finishes,
+      // or by _stopSpeaking() on an explicit interrupt — not here, since play() only awaits
+      // playback starting, not finishing.
+    } catch (e) {
+      setState(() {
+        _error = 'Could not play audio — text response is still shown above. ($e)';
+        _speakingIndex = null;
+      });
+    }
+  }
+
+  Future<void> _stopSpeaking() async {
+    await _playback.stop();
+    if (mounted) setState(() => _speakingIndex = null);
+  }
+
   void _scrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (_scrollController.hasClients) {
@@ -131,6 +201,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
     if (_speechAvailable) {
       _speech.stop();
     }
+    _playback.stop();
     _textController.dispose();
     _scrollController.dispose();
     super.dispose();
@@ -139,7 +210,18 @@ class _ConversationScreenState extends State<ConversationScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(title: const Text('Talk to Health AI')),
+      appBar: AppBar(
+        title: const Text('Talk to Health AI'),
+        actions: [
+          IconButton(
+            tooltip: 'Get assessment',
+            icon: _fetchingAssessment
+                ? const SizedBox(width: 20, height: 20, child: CircularProgressIndicator(strokeWidth: 2))
+                : const Icon(Icons.health_and_safety_outlined),
+            onPressed: _fetchingAssessment ? null : _getAssessment,
+          ),
+        ],
+      ),
       body: Column(
         children: [
           if (_error != null)
@@ -157,6 +239,7 @@ class _ConversationScreenState extends State<ConversationScreen> {
               itemBuilder: (context, index) {
                 final entry = _messages[index];
                 final isUser = entry.role == 'user';
+                final isSpeakingThis = _speakingIndex == index;
                 return Align(
                   alignment: isUser ? Alignment.centerRight : Alignment.centerLeft,
                   child: Container(
@@ -170,7 +253,24 @@ class _ConversationScreenState extends State<ConversationScreen> {
                           : Theme.of(context).colorScheme.surfaceContainerHighest,
                       borderRadius: BorderRadius.circular(12),
                     ),
-                    child: Text(entry.text),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Text(entry.text),
+                        if (entry.isAssessment) ...[
+                          const SizedBox(height: 4),
+                          // TTS is optional, never the only channel — the text above is always
+                          // shown regardless of whether Play is ever tapped or succeeds.
+                          IconButton(
+                            key: ValueKey('speak_$index'),
+                            tooltip: isSpeakingThis ? 'Stop' : 'Play',
+                            icon: Icon(isSpeakingThis ? Icons.stop_circle_outlined : Icons.volume_up_outlined),
+                            onPressed: isSpeakingThis ? _stopSpeaking : () => _playAssessment(index),
+                          ),
+                        ],
+                      ],
+                    ),
                   ),
                 );
               },

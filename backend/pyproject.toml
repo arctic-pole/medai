@@ -28,6 +28,10 @@ dependencies = [
     "pgvector>=0.3",
     # MedicalKnowledgeProvider (MedlinePlus) — real HTTP calls at runtime now, not just tests.
     "httpx>=0.27",
+    # TextToSpeechProvider concrete choice: pyttsx3 — offline, wraps the OS's native TTS engine
+    # (SAPI5 on Windows, this dev machine), no API key, no network call, no Gemini quota
+    # interaction. See app/providers/tts/pyttsx3_provider.py.
+    "pyttsx3>=2.90",
 ]
 
 [project.optional-dependencies]

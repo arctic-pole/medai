@@ -19,7 +19,12 @@
   turned out to be deprecated, not rate-limited). Switching models is not a reliable way to get
   more real calls — a paid tier or waiting for a reset is.
 - **STT**: `speech_to_text` (pub.dev) — https://pub.dev/packages/speech_to_text (Phase 2, done)
-- **TTS**: `flutter_tts` (pub.dev) — https://pub.dev/packages/flutter_tts (Phase 11, not built)
+- **TTS**: **pyttsx3** (PyPI) — https://pypi.org/project/pyttsx3/, offline, wraps the OS's
+  native engine (SAPI5 on this Windows machine), no API key. Backend-side (`app/providers/tts/`),
+  not the `flutter_tts` mobile-side plugin an earlier version of this doc named as the plan —
+  synthesis happens server-side so the `ValidatedText` gate (`app/tts/schema.py`) can be
+  enforced in one place in code, not trusted to every mobile client. Mobile plays the resulting
+  audio via `audioplayers` (pub.dev) — https://pub.dev/packages/audioplayers. (Phase 11, done)
 - **Embeddings**: `BAAI/bge-large-en-v1.5` via `sentence-transformers`, self-hosted —
   https://huggingface.co/BAAI/bge-large-en-v1.5 / https://www.sbert.net/. No API key. (Phase 5)
 - **Vector store**: pgvector — https://github.com/pgvector/pgvector, the same Postgres
@@ -48,38 +53,59 @@
   - WHO pulse oximetry manual: https://cdn.who.int/media/docs/default-source/patient-safety/pulse-oximetry/who-ps-pulse-oxymetry-training-manual-en.pdf — **direct primary-source fetch succeeded**; exact thresholds quoted in `app/safety/vital_rules.py`.
   - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm — **direct fetch succeeded**; exact quote in `app/safety/vital_rules.py`. No dangerous-fever/hypothermia threshold is stated on this page, so none is encoded as a rule.
 
-## Current phase: 10 — Health Platform Integration
+## Current phase: 11 — TTS
 
-- **`POST /vitals/sync` is now live** (`app/api/vitals.py`) — the real ingestion path for
-  health-platform data, backed by a genuinely new Android environment stood up specifically for
-  this phase (Android SDK, an emulator with Health Connect, Windows Developer Mode for native
-  plugin builds — none of this existed on this machine before). See `docs/AI_PIPELINE.md` for
-  the full walkthrough, including the platform decision and its testability trade-offs.
-- **`DeviceAdapter` (`app/providers/devices/base.py`) still has no Python implementation, and
-  never will for Health Connect specifically** — a real architectural finding, not a shortcut:
-  Health Connect has no cloud endpoint, so a backend-callable `read()` adapter can't reach it at
-  all. The real adapter is client-side (`mobile/lib/services/health_connect_adapter.dart`); the
-  Python ABC remains what a future cloud-platform adapter (Fitbit, Withings) would implement.
-- **Four real bugs found and fixed while wiring this together** (all detailed in
-  `docs/AI_PIPELINE.md`): the `health` plugin needs `FlutterFragmentActivity`, not
-  `FlutterActivity`; Kotlin's incremental compiler crashes across a `C:`/`E:` drive boundary on
-  Windows; Health Connect requires blood pressure as one combined write, not two; and — the most
-  consequential one — mobile's device-bootstrap email domain (`@device.local`) was silently
-  rejected by the backend's email validator the whole time, blocking any real mobile-to-backend
-  call before this phase (fixed to `@example.com`).
-- **Verified live, real device data the whole way through**: seeded real Health Connect records,
-  synced them via the app's real "Sync Health Connect data" button, confirmed `200 OK` with all
-  7 readings accepted, confirmed the exact values (including a correct Celsius→Fahrenheit
-  conversion) in the dev DB, and confirmed the same deterministic safety-engine chain Phase 9
-  proved for manual entry now also produces a correct `MODIFY` decision
-  (`VITAL_BP_STAGE1_001` + `VITAL_SPO2_LOW_001`) for Health Connect-sourced data, using Phase 7's
-  rules completely unmodified — the "clinical engine must not depend on a specific wearable"
-  requirement, demonstrated rather than assumed.
-- **Known gaps, stated plainly**: no automated integration test for the Health Connect
-  unavailable/permission-denied path yet (exercised manually, not in CI); Apple HealthKit,
-  Fitbit, and Withings remain unimplemented (see "Provider/source decisions" above for why);
-  background/automatic sync doesn't exist — only the explicit button — matching this phase's
-  decided MVP scope, not an oversight; the medication cross-check gap from Phase 8 is unchanged.
+- **`POST /assessment/speech` is now live** (`app/api/assessment.py`) — `voice_pipeline.flow`'s
+  `VALIDATED_TEXT → TTS → SPEAKER` step. `TextToSpeechProvider` (`app/providers/tts/`) is the
+  `architecture.provider_interfaces` abstraction; concrete choice is **pyttsx3** (offline, no
+  API key — see "Provider/source decisions" above). See `docs/AI_PIPELINE.md` for the full
+  design.
+- **"TTS must never receive unvalidated medical output" is enforced at the type level, not by
+  convention**: `ValidatedText` (`app/tts/schema.py`) can only be constructed via a
+  sentinel-token-guarded private factory, and `TextToSpeechProvider.speak()` — the only public
+  entry point, non-abstract, implemented once on the base class — requires that type and
+  re-checks it at runtime. The only legitimate path to a `ValidatedText` is
+  `app/tts/speech.py:synthesize_validated_response()`, which doesn't accept a pre-built
+  `Assessment` as an argument (that would let a caller pass fabricated text) and always calls
+  `get_validated_output()` itself first.
+- **Verified by test, not just by design**: when validation exhausts its correction attempts
+  and resolves to `SAFE_FALLBACK`, that fallback text — never either rejected attempt's
+  content — is what reaches TTS (`test_tts_speech.py`). A TTS-engine failure returns `503
+  TTS_ERROR` from a *separate* endpoint (`/assessment/speech`, not a field on `/assessment`), so
+  it can never affect the text endpoint's own success — proven by a test that hits both in the
+  same request cycle.
+- **Mobile playback** (`mobile/lib/services/speech_playback_service.dart`, via `audioplayers`):
+  play/stop/barge-in (a second `play()`, or activating the mic, always interrupts current
+  playback — `voice_pipeline.rules`) and graceful failure (an inline error, never removing the
+  already-shown text). Wired into `ConversationScreen`: text is always shown before audio is
+  ever requested, and Play is a separate, explicit, non-automatic action.
+- **Verified live, not just against fakes**: a real HTTP call to a running dev server hit
+  Gemini's real (expected, already-exhausted-today) rate limit, correctly failed closed to
+  `SAFE_FALLBACK`, and `POST /assessment/speech` returned a genuine `200 OK` with a real 376KB
+  WAV file (`RIFF ... WAVE audio, Microsoft PCM, 16 bit, mono 22050 Hz`) — real pyttsx3 synthesis
+  over a real HTTP response.
+- **Known gaps, stated plainly**: no streaming synthesis (pyttsx3 has no streaming API); no
+  automated test exercises mobile Play against a *real* platform audio backend, only the
+  `AudioBackend` fake (unlike Phase 10, no live Android emulator run was done for TTS
+  specifically); TTS is reachable only via an explicit "Get assessment" action, not wired into
+  the automatic conversation-reply flow — matches this phase's MVP scope, same as `/assessment`
+  itself before Phase 12.
+
+## Phase 10 — Health Platform Integration (superseded above for TTS)
+
+`POST /vitals/sync` (`app/api/vitals.py`) added real Google Health Connect ingestion. Health
+Connect has no cloud endpoint, so `DeviceAdapter` (`app/providers/devices/base.py`) has no
+Python implementation and never will for it specifically — the real adapter is client-side
+(`mobile/lib/services/health_connect_adapter.dart`). Required standing up a real Android
+SDK/emulator on this machine from scratch. Verified live with real device data: seeded records,
+synced via the app's real button, confirmed correct values/units in the dev DB, and confirmed
+the same deterministic safety-engine chain Phase 9 used produces a correct `MODIFY` decision for
+Health-Connect-sourced data with zero changes to `clinical_reasoner`/`safety_engine` code. Four
+real bugs found and fixed along the way, including a pre-existing, previously-undetected bug in
+mobile's device-bootstrap email domain (`@device.local`, rejected by the backend's validator —
+fixed to `@example.com`) — see git history for the full account. Apple HealthKit, Fitbit, and
+Withings remain unimplemented; background/automatic sync doesn't exist, only the explicit
+button (decided MVP scope).
 
 ## Phase 9 — Vital Ingestion (superseded above for the health-platform path)
 
@@ -90,7 +116,8 @@ non-backdated reading into `vitals`. Validation sanity bounds are deliberately g
 catch garbage input, not clinical severity, which stays exclusively Phase 7's job; a genuinely
 critical real reading (SpO2 86%) is accepted, not rejected, and verified live to correctly drive
 `POST /assessment`'s safety-engine call to `ESCALATE` via `VITAL_SPO2_EMERGENCY_001`. 132/132
-tests as of Phase 9 (more added in Phase 10, now 134/134 backend + 5/5 mobile, see above).
+tests as of Phase 9 (134/134 backend + 5/5 mobile as of Phase 10; now 150/150 backend + 15/15
+mobile as of Phase 11, see above).
 
 ## Phase 8 — Output Validator, `POST /assessment` wired up (superseded above for vitals)
 
@@ -173,14 +200,14 @@ Reranking is a no-op (plain cosine-similarity order) — no reranker model was s
   unpopulated — Phase 7's sourced emergency rules and Phase 9's real vitals both now exist, but
   neither is wired into `app/conversation/` yet, only into `/assessment`. Mobile doesn't call
   `/symptoms/extract`, so `high_impact_missing_information` never triggers in the live mobile
-  flow. Mobile *does* now call `/vitals/sync` (Phase 10's "Sync Health Connect data" button), but
-  that's a standalone action, not wired into the conversation loop either.
+  flow. Mobile *does* now call `/vitals/sync` (Phase 10's "Sync Health Connect data" button) and
+  `/assessment`/`/assessment/speech` (Phase 11's "Get assessment" action + Play/Stop), but both
+  are standalone actions, not wired into the automatic conversation-reply loop.
 - Dev-only CORS (`allow_origins=["*"]`) on the backend — must be locked down before any real
   deployment (Phase 13).
 - A `consents` table was added beyond `medai_spec.yaml`'s explicit `database.tables` list, to
   satisfy `security.consent_record_fields` — flagged in `IMPLEMENTATION_PLAN.md` and
   `docs/DATABASE.md`.
-- No concrete provider chosen yet for backend-side TTS.
 - No formal compliance posture (HIPAA/GDPR-equivalent or explicit non-claim) has been adopted;
   in the interim, all patient data is handled as if it were regulated health data.
 - This is a prototype. It is not a licensed medical device, not a diagnostic system, and must

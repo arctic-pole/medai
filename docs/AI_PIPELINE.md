@@ -1,7 +1,8 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This reflects Phase 10 (health
-> platform integration) on top of Phase 9's vital ingestion and Phase 8's `POST /assessment`.
+> Filled in incrementally as each AI-related phase lands. This reflects Phase 11 (TTS) on top
+> of Phase 10's health platform integration, Phase 9's vital ingestion, and Phase 8's
+> `POST /assessment`.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -24,7 +25,10 @@ this endpoint's `DETERMINISTIC_SAFETY` step evaluates *real* vitals from the `vi
 `app/patient_state/assembler.py` → `vitals_from_patient_state()`), not an empty dict — see
 "Vital ingestion (Phase 9)" below. As of Phase 10, those real vitals can now originate from a
 real health platform (Google Health Connect), not just manual entry — see "Health platform
-integration (Phase 10)" below.
+integration (Phase 10)" below. As of Phase 11, `OPTIONAL_TTS` is also built — a genuinely
+optional companion to `TEXT_RESPONSE`, reachable via `POST /assessment/speech`, gated so it can
+only ever speak text that has already been through `get_validated_output()` — see "TTS (Phase
+11)" below.
 
 ## Provider abstraction
 
@@ -472,6 +476,113 @@ manually during setup (a `ClassCastException` and a cross-drive compiler crash b
 fixed before the real flow could run at all) but doesn't yet have an automated integration test
 the way `test_vitals.py` covers manual entry's failure paths.
 
+## TTS (Phase 11)
+
+`voice_pipeline.flow`: `... → VALIDATED_TEXT → TTS → SPEAKER`. `voice_pipeline.rules`: "TTS
+must never receive unvalidated medical output" and "User must be able to interrupt TTS and
+continue speaking." Both are enforced at the code level, not left as conventions.
+
+**Provider abstraction** (`app/providers/tts/`): `TextToSpeechProvider` (`base.py`) is the
+`architecture.provider_interfaces` abstraction. Its **only public method, `speak()`, is not
+abstract** — it's implemented once on the base class and requires a `ValidatedText`
+(`app/tts/schema.py`), re-checked at runtime via `isinstance` even though the type hint already
+says so (defense in depth: a caller that ignores static typing, e.g. Python's own dynamic
+typing, still can't get through). Concrete providers implement only `_synthesize(text: str) ->
+bytes`, which never sees anything the base class hasn't already validated is a `ValidatedText`.
+This keeps provider-specific logic entirely inside `app/providers/tts/` — nothing in
+`app/conversation/`, `app/reasoning/`, `app/safety/`, or `app/validation/` needs to know or care
+which TTS vendor is active.
+
+**Concrete choice: pyttsx3** — offline, wraps the OS's native TTS engine (SAPI5 on this Windows
+dev machine; NSSpeechSynthesizer on macOS; espeak on Linux). No API key, no network call, and
+therefore structurally incapable of touching Gemini's quota — mirrors Phase 2's on-device STT
+choice (`speech_to_text`) for the same reasons. Verified to actually produce audio before being
+wired in (`pyttsx3.init().save_to_file(...)` run standalone, produced a real non-empty WAV) —
+see `app/providers/tts/pyttsx3_provider.py`.
+
+**The `ValidatedText` gate** (`app/tts/schema.py`): a type-level guarantee, not just a
+convention. `ValidatedText` can only be constructed via a private, sentinel-token-guarded
+factory (`_mint_validated_text`) — calling `ValidatedText("...")` directly raises `TypeError`
+(`test_tts_gate.py`). The only legitimate caller of that factory is
+`app/tts/speech.py:synthesize_validated_response()`, which:
+
+- Does **not** accept a pre-built `Assessment` as an argument — only the same pre-validation
+  pipeline inputs `POST /assessment` itself receives (`llm`, `evidence_package`,
+  `safety_evaluation`). This closes a loophole a simpler `speak(assessment)`-shaped function
+  would leave open: constructing an `Assessment` directly with fabricated text
+  (`Assessment(summary="...")`) is trivial and already done throughout this codebase's own test
+  suite, so accepting one as an argument would let a caller smuggle unvalidated text through.
+- Always calls `get_validated_output()` itself, internally, before any text is minted into a
+  `ValidatedText` — so there is no argument-shaped path around the validation step. This
+  function is the *only* place in the codebase permitted to call `TextToSpeechProvider.speak()`.
+- Speaks `Assessment.summary`, plus `Assessment.escalation` if present — spoken emergency
+  guidance matters as much as the written form.
+- Returns `(Assessment, bytes)` — the validated text alongside the audio — so a caller is never
+  tempted to treat the audio as the only output; the text is not optional, structurally.
+
+**Endpoint**: `POST /assessment/speech` (`app/api/assessment.py`) runs the identical pipeline
+setup as `POST /assessment` (patient state → evidence → safety evaluation), then calls
+`synthesize_validated_response()` instead of `get_validated_output()` directly. A TTS-specific
+failure (engine unavailable, empty synthesis) returns `503 TTS_ERROR`
+(`error_handling.error_categories`) rather than silent/fake audio — deliberately a *separate*
+endpoint from `POST /assessment`, not a field added to its response, so a TTS failure can never
+affect the text endpoint's own availability or behavior. The mobile app is expected to already
+have (or separately fetch) the text and simply not play audio on this failure.
+
+**Mobile playback** (`mobile/lib/services/speech_playback_service.dart`): synthesis happens
+server-side, so this is a playback wrapper, not a TTS engine — `SpeechPlaybackService` (backed
+by the `audioplayers` package, seam-injected via a small `AudioBackend` interface for
+testability without a platform audio channel) exposes `play()`, `stop()`, and an `onComplete`
+stream. `play()` always calls `stop()` first, so a second `play()` call — or the mic being
+activated — interrupts whatever was playing rather than overlapping it
+(`voice_pipeline.rules`'s barge-in requirement). Wired into `ConversationScreen`: a "Get
+assessment" app-bar action fetches and shows the validated summary as text immediately (never
+gated on TTS); a Play/Stop icon next to that specific message fetches and plays its audio only
+on explicit tap, never automatically (no always-listening-adjacent auto-play); tapping the mic
+button unconditionally stops any current playback first, before even checking whether STT
+itself is available, so barge-in works on the very first tap. A playback or fetch failure shows
+an inline error without touching the already-rendered text.
+
+**Tests** (16 new backend, 11 new mobile):
+- `test_tts_gate.py` — `ValidatedText` cannot be constructed directly; `speak()` rejects a
+  plain `str` and empty/whitespace-only text.
+- `test_tts_speech.py` — successful synthesis speaks the real summary (and escalation text);
+  **the core safety property**: when validation exhausts its correction attempts and resolves
+  to `SAFE_FALLBACK`, that fallback — never either rejected/dangerous attempt's text — is what
+  reaches TTS; a TTS-specific failure propagates without corrupting or consuming the
+  already-validated `Assessment` (text stays independently available).
+- `test_pyttsx3_provider.py` — a real (not faked) synthesis call, asserting genuine non-empty
+  WAV output. Safe to run in every suite run: no API key, no network, no Gemini interaction.
+- `test_assessment_speech.py` (integration) — auth, ownership (404), a fakes-driven happy path
+  returning real WAV bytes over HTTP, a TTS-engine-failure case asserting `503 TTS_ERROR` *and*
+  that `POST /assessment` independently still succeeds for the same conversation, and the
+  SAFE_FALLBACK-is-spoken case when no LLM is configured.
+- `speech_playback_service_test.dart` — barge-in ordering (`stop()` always precedes `play()`),
+  a second `play()` interrupting rather than overlapping the first, playback failure raising
+  `TtsPlaybackException` rather than failing silently, `stop()` never throwing, and `onComplete`
+  forwarding.
+- `conversation_screen_test.dart` (4 new) — the validated summary is shown as text before any
+  audio is ever requested; Play fetches and plays audio and Stop/a second Play interrupts it;
+  a speech-fetch failure is shown inline without removing the already-shown text; activating the
+  microphone interrupts audio that's currently playing.
+
+**Verified live, not just against fakes**: a real HTTP call to a running dev server —
+`POST /assessment/speech` against a conversation with no extracted symptoms. The real Gemini
+call inside `get_validated_output()` hit its documented 30s client-side timeout (expected —
+today's free-tier quota was already exhausted by earlier live testing this session), correctly
+resolving to `SAFE_FALLBACK` per Phase 8's fail-closed design; `synthesize_validated_response()`
+then ran real `pyttsx3` synthesis on that fallback text and the endpoint returned a genuine
+`200 OK` with a real 376KB WAV file (verified via `file`: `RIFF ... WAVE audio, Microsoft PCM,
+16 bit, mono 22050 Hz`) — real audio bytes over a real HTTP response, not a mocked one.
+
+**Not yet implemented**: streaming synthesis (`voice_pipeline.rules`: "Use streaming where
+supported" — pyttsx3 has no streaming API; a future streaming-capable provider could add it
+without changing `TextToSpeechProvider`'s public contract beyond adding a new method); no
+automated test exercises the mobile Play button against a *real* platform audio backend (only
+against the `AudioBackend` fake — a real device/emulator audio smoke test, like Phase 10's, was
+not performed for TTS specifically, given Phase 10 already established Android build/run works
+on this machine).
+
 ## The assessment endpoint
 
 `POST /assessment` (`app/api/assessment.py`) chains everything above together for the first
@@ -522,4 +633,6 @@ dedicated `/assessment` endpoint) is still separate, undone work. Health Connect
 iOS/Mac environment exists on this machine to build HealthKit against, and no cloud-platform
 developer account was set up for the others. Background/automatic sync (as opposed to the
 explicit "Sync Health Connect data" button) is not built — matches the MVP scope decided for
-this phase, not a gap.
+this phase, not a gap. TTS (Phase 11) has no streaming synthesis and isn't wired into the live
+conversation loop's automatic reply path — it's reachable only via the explicit "Get assessment"
+action, matching this phase's own MVP scope, same as `/assessment` itself before Phase 12.

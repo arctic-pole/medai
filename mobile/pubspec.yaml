@@ -39,6 +39,7 @@ dependencies:
   flutter_secure_storage: ^11.2.0
   uuid: ^4.6.0
   health: ^13.3.2
+  audioplayers: ^6.8.1
 
 dev_dependencies:
   flutter_test:

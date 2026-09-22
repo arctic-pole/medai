@@ -21,26 +21,28 @@ for the full, authoritative statement of scope.
 
 ## Status
 
-Health-platform vital ingestion is now live: the mobile app can sync real data from Google
-Health Connect (`POST /vitals/sync`) alongside manual entry (`POST /vitals`), and real vitals
-flow all the way through `POST /assessment`'s deterministic safety engine — the first endpoint
-in the codebase allowed to return clinical-shaped output, chaining patient state, vital
-ingestion, evidence retrieval, clinical reasoning, the deterministic safety engine, and the
-output validator (Phases 3, 5, 6, 7, 8, 9, 10) into one gated pipeline. It always returns `200`
-with a valid `Assessment` body, falling back to a safe "insufficient information" response
-rather than an error whenever anything fails a check or goes wrong internally — **verified
-live**, end to end with real Health Connect data on a real Android emulator: seeded real vitals
-(including a genuinely low SpO2), synced them via the app's real UI, confirmed correct
-persistence and unit conversion in the database, and confirmed the same deterministic
-safety-engine code Phase 7 already had produced a correct `MODIFY` decision with zero code
-changes. Known gaps: the endpoint doesn't yet cross-check its own proposed medications against
-medication safety (no reliable way yet to extract a drug name from free text); Health Connect's
+The full text+voice output pipeline is now live: `POST /assessment` returns a validated
+`Assessment`, and `POST /assessment/speech` returns spoken audio of that same, actually-validated
+result — never raw LLM output, by construction (`ValidatedText`, `app/tts/schema.py`, can only be
+minted by code that has already called `get_validated_output()`). This chains patient state,
+vital ingestion (manual + Health Connect), evidence retrieval, clinical reasoning, the
+deterministic safety engine, output validation, and TTS (Phases 3, 5, 6, 7, 8, 9, 10, 11) into
+one gated pipeline. `POST /assessment` always returns `200` with a valid `Assessment` body,
+falling back to a safe "insufficient information" response rather than an error whenever
+anything fails a check; `POST /assessment/speech` returns `503 TTS_ERROR` on a synthesis
+failure specifically, without ever affecting the text endpoint — TTS is optional, never the only
+response channel. **Verified live**: real Health Connect data synced end-to-end on a real
+Android emulator (Phase 10), and a real HTTP call to `/assessment/speech` that hit Gemini's real
+rate limit, correctly failed closed to `SAFE_FALLBACK`, and returned a genuine ~376KB WAV file
+from real offline (pyttsx3) synthesis (Phase 11). Known gaps: the endpoint doesn't yet
+cross-check its own proposed medications against medication safety; Health Connect's
 `DeviceAdapter` necessarily lives in the mobile app, not the backend (no cloud API exists for
-it — see `docs/AI_PIPELINE.md`); Apple HealthKit and cloud platforms (Fitbit, Withings) remain
-unimplemented; and worst-case `/assessment` latency can approach 2 minutes when the LLM is
-repeatedly failing — callers should use a generous client timeout. Phases 0–10 (Foundation
-through Health Platform Integration) are all done — see `docs/KNOWN_LIMITATIONS.md` for the
-up-to-date phase-by-phase status.
+it); Apple HealthKit and cloud health platforms (Fitbit, Withings) remain unimplemented; TTS has
+no streaming synthesis and isn't wired into the automatic conversation-reply loop, only an
+explicit "Get assessment" action; and worst-case `/assessment` latency can approach 2 minutes
+when the LLM is repeatedly failing — callers should use a generous client timeout. Phases 0–11
+(Foundation through TTS) are all done — see `docs/KNOWN_LIMITATIONS.md` for the up-to-date
+phase-by-phase status.
 
 LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live across most phases. Its free
 tier is rate-limited in a way that's turned out less predictable than first assumed: four model

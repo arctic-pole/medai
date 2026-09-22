@@ -18,13 +18,24 @@ Health Connect (`lib/services/health_connect_adapter.dart`) and syncs them to th
 **verified live end-to-end on a real Android emulator**, not just against fakes or via curl —
 see `docs/AI_PIPELINE.md` for the full transcript.
 
-Verified: `flutter analyze` (clean), `flutter test` (5/5 passing — a widget test driving the
-typed-text send path against a fake `ApiClient`, a app-boot smoke test, and unit tests for the
-Health Connect adapter's unit conversion), `flutter build web` (succeeds), and — as of Phase 10
-— `flutter build apk --release` (succeeds) installed and run on a real Android emulator. The
-voice/STT path still has no automated test (no microphone harness in this environment) —
-verified manually by confirming the equivalent typed-text flow passes and the backend endpoints
-work end-to-end.
+Phase 11: a "Get assessment" app-bar action on `ConversationScreen` fetches a real validated
+`Assessment` (`POST /assessment`) and shows its summary as text immediately; a Play/Stop icon
+on that message fetches and plays its audio (`POST /assessment/speech`) via
+`lib/services/speech_playback_service.dart` (backed by `audioplayers`). Synthesis happens
+server-side (`backend/app/providers/tts/`) — this service is playback only. Barge-in:
+activating the mic always interrupts any audio currently playing, before even checking whether
+STT is available.
+
+Verified: `flutter analyze` (clean), `flutter test` (15/15 passing — see below for the Phase 11
+additions), `flutter build web` (succeeds), and `flutter build apk --release` (succeeds,
+installed and run on a real Android emulator, Phase 10). The voice/STT path still has no
+automated test (no microphone harness in this environment) — verified manually by confirming
+the equivalent typed-text flow passes and the backend endpoints work end-to-end. Phase 11's new
+tests: `speech_playback_service_test.dart` (6 — barge-in ordering, interrupt-not-overlap,
+playback failure raising `TtsPlaybackException` rather than failing silently, `stop()` never
+throwing, completion-event forwarding) and 4 new `conversation_screen_test.dart` cases (text
+shown before any audio is requested; Play/Stop interrupt correctly; a speech-fetch failure
+shows inline without removing the already-shown text; mic activation interrupts playback).
 
 **STT provider decision:** implemented via Flutter's `speech_to_text` package, which wraps each
 platform's native/on-device speech recognition (Android `SpeechRecognizer`, iOS `Speech`
