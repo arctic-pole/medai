@@ -52,3 +52,36 @@ class DeviceResponse(BaseModel):
     created_at: datetime
 
     model_config = {"from_attributes": True}
+
+
+class VitalSyncReading(BaseModel):
+    """One reading the app already read from a real on-device health platform (Health
+    Connect) — this is the wire shape of a NormalizedMeasurement minus `source`/`device_id`,
+    which the server fills in itself rather than trusting the client (see POST /vitals/sync).
+    """
+
+    type: VitalType
+    value: float
+    unit: str
+    timestamp: datetime
+
+
+class VitalSyncRequest(BaseModel):
+    device_id: uuid.UUID
+    readings: list[VitalSyncReading]
+
+
+class VitalSyncResult(BaseModel):
+    type: str
+    value: float
+    unit: str
+    timestamp: datetime
+    accepted: bool
+    rejection_reason: str | None
+
+
+class VitalSyncResponse(BaseModel):
+    synced: int
+    accepted: int
+    rejected: int
+    results: list[VitalSyncResult]

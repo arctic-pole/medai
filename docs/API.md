@@ -33,21 +33,24 @@ real (live-verified deterministically; see `docs/AI_PIPELINE.md`). The endpoint'
 medications still aren't cross-checked against medication safety, since `output_schema`'s
 `medication_information` is free text, not a structured drug list — unchanged, still open.
 
-## Phase 9 endpoints (vitals / devices)
+## Phase 9-10 endpoints (vitals / devices)
 
 | Method | Path | Auth | Description |
 |---|---|---|---|
-| POST | `/vitals` | bearer | `{type, value, unit, timestamp?}` → runs `vital_system.validation_stages` (unit check, range sanity, etc.) and, if accepted, persists to `measurements` and upserts the `vitals` current-snapshot row. `source` is always forced to `"manual"` server-side regardless of client input — manual entry is the only reachable path until a real `DeviceAdapter`/health-platform integration exists (Phase 10). Returns `201` with the stored `Measurement` if accepted; `422` with `MEASUREMENT_UNRELIABLE: <reason> — please take another measurement.` if rejected (still logged to `measurements`, never silently dropped, per `vital_system.on_suspicious_measurement`). A genuinely critical real value (e.g. SpO2 82%) is accepted, not rejected — the validation stages check plausibility/unit/format, not clinical severity. |
+| POST | `/vitals` | bearer | `{type, value, unit, timestamp?}` → runs `vital_system.validation_stages` (unit check, range sanity, etc.) and, if accepted, persists to `measurements` and upserts the `vitals` current-snapshot row. `source` is always forced to `"manual"` server-side regardless of client input. Returns `201` with the stored `Measurement` if accepted; `422` with `MEASUREMENT_UNRELIABLE: <reason> — please take another measurement.` if rejected (still logged to `measurements`, never silently dropped, per `vital_system.on_suspicious_measurement`). A genuinely critical real value (e.g. SpO2 82%) is accepted, not rejected — the validation stages check plausibility/unit/format, not clinical severity. |
 | GET | `/vitals` | bearer | Current snapshot — one row per vital type, the latest accepted, non-backdated reading. |
 | GET | `/vitals/history?type=&limit=` | bearer | Full measurement history including rejected entries, newest first, optionally filtered by `type`. |
-| POST | `/devices` | bearer | `{device_type, label?}` → registers a device record. Registering a device does not make it capable of submitting readings automatically yet — `app/providers/devices/base.py` is an ABC with no concrete adapter; this endpoint exists so the schema/relationship is in place ahead of a real integration. |
+| POST | `/vitals/sync` | bearer | `{device_id, readings: [{type, value, unit, timestamp}]}` → Phase 10's real health-platform ingestion path, called by the mobile app's Health Connect sync (never directly by a user). `device_id` must belong to the caller (404 otherwise); `source` is always forced to `"health_platform"` server-side. Runs every reading through the same validation/persistence path as `POST /vitals`; returns `{synced, accepted, rejected, results: [...]}` — one outcome per submitted reading, never silently dropped. |
+| POST | `/devices` | bearer | `{device_type, label?}` → registers a device record. A `manual`-typed device doesn't make readings automatic; a `health_connect`-typed device is what `POST /vitals/sync` requires a `device_id` to reference. |
 | GET | `/devices` | bearer | List the current patient's registered devices. |
 
 Live-verified end-to-end (see `docs/AI_PIPELINE.md` for the full transcript): accepted/rejected
 readings, the current-snapshot vs. history distinction, backdated-reading handling, and — via a
 follow-up script exercising `build_patient_state`/`evaluate_safety` directly — that a real
 SpO2=86% reading flows through to a real `ESCALATE` safety decision with the correct triggered
-rule (`VITAL_SPO2_EMERGENCY_001`).
+rule (`VITAL_SPO2_EMERGENCY_001`). Phase 10 additionally verified `POST /vitals/sync` live: real
+Google Health Connect data, read by the Android app itself (no cloud API for this platform —
+see `docs/AI_PIPELINE.md`), synced end-to-end and correctly reaching a `MODIFY` safety decision.
 
 ## Phase 5 endpoints (medical knowledge / RAG)
 

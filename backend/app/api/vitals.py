@@ -5,9 +5,16 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_patient
-from app.db.models import Measurement, Patient, Vital
+from app.db.models import Device, Measurement, Patient, Vital
 from app.db.session import get_db
-from app.schemas.vital import MeasurementResponse, VitalCreateRequest, VitalResponse
+from app.schemas.vital import (
+    MeasurementResponse,
+    VitalCreateRequest,
+    VitalResponse,
+    VitalSyncRequest,
+    VitalSyncResponse,
+    VitalSyncResult,
+)
 from app.vitals.schema import NormalizedMeasurement
 from app.vitals.service import ingest_measurement
 
@@ -52,6 +59,61 @@ async def list_current_vitals(
 ) -> list[Vital]:
     result = await db.execute(select(Vital).where(Vital.patient_id == patient.id))
     return list(result.scalars().all())
+
+
+@router.post("/sync", response_model=VitalSyncResponse)
+async def sync_vitals_from_health_platform(
+    payload: VitalSyncRequest,
+    patient: Patient = Depends(get_current_patient),
+    db: AsyncSession = Depends(get_db),
+) -> VitalSyncResponse:
+    """Phase 10's VITAL_SERVICE entry point for a real on-device health platform (Health
+    Connect). Health Connect's data lives in the OS-level store on the user's own device,
+    gated by that device's own permission grants — the backend cannot poll it the way
+    app/providers/devices/base.py's DeviceAdapter.read() assumes (see that file's docstring),
+    so the concrete adapter runs client-side in the app; this endpoint is where its readings
+    enter the canonical pipeline. `source` is always forced to "health_platform" server-side
+    regardless of client input (never fabricate provenance, same rule as POST /vitals) —
+    Health Connect aggregates across apps/devices rather than being one physical DEVICE, so
+    `automatic_retrieval_preference`'s HEALTH_PLATFORM tier, not DEVICE, is the correct label.
+    Every reading runs through the same validation/persistence path as manual entry — accepted
+    or rejected, never silently dropped — and the response reports one outcome per reading.
+    """
+
+    device = await db.get(Device, payload.device_id)
+    if device is None or device.patient_id != patient.id:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="device not found")
+
+    results: list[VitalSyncResult] = []
+    for reading in payload.readings:
+        measurement = NormalizedMeasurement(
+            type=reading.type,
+            value=reading.value,
+            unit=reading.unit,
+            timestamp=reading.timestamp,
+            source="health_platform",
+            device_id=device.id,
+            quality="good",
+        )
+        record = await ingest_measurement(db, patient, measurement)
+        results.append(
+            VitalSyncResult(
+                type=record.type,
+                value=record.value,
+                unit=record.unit,
+                timestamp=record.timestamp,
+                accepted=record.accepted,
+                rejection_reason=record.rejection_reason,
+            )
+        )
+
+    accepted_count = sum(1 for r in results if r.accepted)
+    return VitalSyncResponse(
+        synced=len(results),
+        accepted=accepted_count,
+        rejected=len(results) - accepted_count,
+        results=results,
+    )
 
 
 @router.get("/history", response_model=list[MeasurementResponse])

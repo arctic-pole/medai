@@ -1,8 +1,7 @@
 # MEDAI — AI Pipeline
 
-> Filled in incrementally as each AI-related phase lands. This reflects Phase 9 (vital
-> ingestion) on top of Phase 8's `POST /assessment` — the first user-facing clinical-output
-> endpoint.
+> Filled in incrementally as each AI-related phase lands. This reflects Phase 10 (health
+> platform integration) on top of Phase 9's vital ingestion and Phase 8's `POST /assessment`.
 
 ## Canonical pipeline (medai_spec.yaml architecture.canonical_pipeline)
 
@@ -15,16 +14,17 @@ USER → AUDIO → STT → STRUCTURED_PATIENT_STATE → FOLLOW_UP_QUESTIONS
 
 Built so far: `STT` (on-device, mobile-side, Phase 2) → `STRUCTURED_PATIENT_STATE` (partial —
 symptom extraction only, Phase 3) → `FOLLOW_UP_QUESTIONS` (Phase 4, deterministic) →
-`VITAL/HEALTH_DATA` (Phase 9, manual entry only) → `EVIDENCE_RETRIEVAL` (Phase 5) →
-`CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` + `MEDICATION_SAFETY` (Phase 7) →
-`OUTPUT_VALIDATION` (Phase 8) → `TEXT_RESPONSE`, now reachable via `POST /assessment`
-(`app/api/assessment.py`) — see "The assessment endpoint" below. `app/reasoning`, `app/safety`,
-and `app/validation` remain otherwise unreachable from the API; this endpoint is the sole caller
-allowed to treat their output as user-facing. As of Phase 9, this endpoint's `DETERMINISTIC_SAFETY`
-step evaluates *real* vitals from the `vitals` table (via `app/patient_state/assembler.py` →
-`vitals_from_patient_state()`), not an empty dict — see "Vital ingestion (Phase 9)" below.
-`VITAL/HEALTH_DATA` today means manual entry only; automatic device/health-platform retrieval
-(`vital_system.automatic_retrieval_preference`'s DEVICE/HEALTH_PLATFORM tiers) is Phase 10.
+`VITAL/HEALTH_DATA` (Phase 9 manual entry + Phase 10 Health Connect sync) →
+`EVIDENCE_RETRIEVAL` (Phase 5) → `CLINICAL_REASONING` (Phase 6) → `DETERMINISTIC_SAFETY` +
+`MEDICATION_SAFETY` (Phase 7) → `OUTPUT_VALIDATION` (Phase 8) → `TEXT_RESPONSE`, now reachable
+via `POST /assessment` (`app/api/assessment.py`) — see "The assessment endpoint" below.
+`app/reasoning`, `app/safety`, and `app/validation` remain otherwise unreachable from the API;
+this endpoint is the sole caller allowed to treat their output as user-facing. As of Phase 9,
+this endpoint's `DETERMINISTIC_SAFETY` step evaluates *real* vitals from the `vitals` table (via
+`app/patient_state/assembler.py` → `vitals_from_patient_state()`), not an empty dict — see
+"Vital ingestion (Phase 9)" below. As of Phase 10, those real vitals can now originate from a
+real health platform (Google Health Connect), not just manual entry — see "Health platform
+integration (Phase 10)" below.
 
 ## Provider abstraction
 
@@ -378,6 +378,100 @@ first needs no LLM call and the second is pure deterministic logic:
   safety-corrected `Assessment` — blocked on today's exhausted free-tier quota (see "Provider
   abstraction" above); the fakes-based test covers the same logical path.
 
+## Health platform integration (Phase 10)
+
+**Decision (user-confirmed, with the testability trade-off flagged up front)**: Google Health
+Connect. Of the four candidate platforms considered (Fitbit Web API, Withings API, Google
+Health Connect, Apple HealthKit), Health Connect is the only one with no cloud REST endpoint at
+all — it is an Android on-device data store, readable only by an app installed on that specific
+device, gated by that device's own runtime permission grants. This has a real architectural
+consequence: `architecture.provider_interfaces`' `DeviceAdapter` (`app/providers/devices/
+base.py`), defined as a backend-callable `read(vital_type) -> NormalizedMeasurement`, **cannot
+be implemented in Python for Health Connect** — there is nothing server-reachable to call. The
+real concrete adapter necessarily runs client-side, in the Flutter app.
+
+- **`mobile/lib/services/health_connect_adapter.dart`** (`HealthConnectAdapter`) — the real
+  `DEVICE -> DEVICE_ADAPTER` step, using the `health` package (pub.dev, v13.3.2, verified
+  against its own installed source — not assumed from a summary) to read Health Connect samples
+  for every `vital_system.initial_measurements` type it supports (heart rate, oxygen
+  saturation, blood pressure systolic/diastolic, body temperature, respiratory rate, weight).
+  Converts each into the backend's exact vocabulary/units (`app/vitals/schema.py`'s `VitalType`,
+  `app/vitals/validation.py`'s `EXPECTED_UNITS`) before it ever leaves the device — notably
+  Celsius→Fahrenheit for body temperature (`convertHealthConnectValue`, unit-tested in
+  `test/health_connect_adapter_test.dart`); every other type Health Connect already reports in
+  the unit the backend expects, verified against the installed package's own default-unit table.
+  Raises `HealthConnectUnavailable` (never fabricates data) per `vital_system.rules`'
+  `{status: unavailable, reason: DEVICE_ERROR}` when Health Connect itself can't be reached.
+- **`mobile/lib/services/health_sync_service.dart`** (`HealthSyncService`) — orchestrates the
+  adapter + `ApiClient`: requests Health Connect permissions, registers a `health_connect`
+  device once (id cached in secure storage, reused thereafter), and POSTs read readings to the
+  new backend endpoint below.
+- **`POST /vitals/sync`** (`app/api/vitals.py`) — the `VITAL_SERVICE` entry point for this data,
+  since `DeviceAdapter.read()` can't be. Validates the given `device_id` belongs to the calling
+  patient, forces `source="health_platform"` server-side regardless of client input (same
+  never-fabricate-provenance rule as manual entry) — Health Connect aggregates across apps and
+  devices rather than being one physical DEVICE, so `automatic_retrieval_preference`'s
+  HEALTH_PLATFORM tier, not DEVICE, is the correct label. Every reading runs through the same
+  `ingest_measurement`/`validate_measurement` path as Phase 9's manual entry — accepted or
+  rejected, never silently dropped — and the response reports one outcome per reading.
+- **Home screen**: a "Sync Health Connect data" button (Android-only; hidden on web/desktop),
+  wired to `HealthSyncService.sync()`, surfacing accepted/rejected counts or a clear
+  "Health Connect unavailable — enter vitals manually" message on failure.
+- **Zero changes to `clinical_reasoner`/`safety_engine`** (`vital_system.rules`: "Clinical
+  engine must not depend on a specific wearable") — confirmed by construction, not just
+  inspection: Health Connect-sourced vitals reach `evaluate_safety()` through the exact same
+  `PatientState.vitals` → `vitals_from_patient_state()` path Phase 9's manual entries already
+  used, and the live test below exercises that live code unmodified.
+
+**Real environment stood up for this, not simulated**: the Android SDK, an emulator (Android
+14/API 34, Google Play system image, which ships Health Connect as a built-in OS component),
+and Windows Developer Mode (required for the `health` plugin's native Kotlin build) were all
+installed and configured specifically for this phase, since none existed on this machine before
+— see `docs/KNOWN_LIMITATIONS.md` for what this changes about mobile's "web-only" status.
+
+**Real bugs found and fixed while wiring this together**, not glossed over:
+- The `health` plugin requires the host `Activity` to be a `FlutterFragmentActivity`, not plain
+  `FlutterActivity` — a `ClassCastException` on first launch, root-caused against the plugin's
+  own example app and fixed in `MainActivity.kt`.
+- Kotlin's incremental compiler cannot compute a relative path between the pub-cache (drive `C:`
+  on this machine) and the project (drive `E:`) on Windows, crashing `compileReleaseKotlin` for
+  any plugin with native Kotlin code — fixed by disabling incremental compilation
+  (`kotlin.incremental=false` in `android/gradle.properties`).
+- Health Connect requires blood pressure written as one combined systolic+diastolic record
+  (`writeBloodPressure`), not two separate `writeHealthData` calls — surfaced as a real API
+  error (`"You must use the [writeBloodPressure] API"`) while seeding live test data.
+- **A real, pre-existing bug in `mobile/lib/services/api_client.dart`, unrelated to Health
+  Connect**: the device-bootstrap flow's placeholder email domain, `@device.local`, is rejected
+  outright by the backend's `EmailStr` validator ("special-use or reserved name") — `.local` is
+  a reserved mDNS TLD. This silently broke *any* live mobile-to-backend registration and had
+  gone undetected because no prior phase had actually exercised a real Android build against a
+  real backend (Chrome/web testing, and Phase 2's own widget tests, never triggered it the same
+  way). Fixed by switching to `@example.com` (IANA-reserved for documentation/testing use).
+
+**Verified live end-to-end**, real device data the whole way through — not fakes, not a
+hand-constructed dict: seeded real Health Connect records (heart rate 76 bpm, oxygen saturation
+91%, blood pressure 128/82, body temperature 37.2°C, respiratory rate 16, weight 70 kg) via a
+temporary debug harness (removed before commit; production code is read-only) using the
+package's real write API; tapped the app's real "Sync Health Connect data" button; confirmed
+`POST /vitals/sync` returned `200 OK` and all 7 readings were `accepted`; queried the dev DB
+directly and confirmed the `vitals` snapshot held the exact values, correctly attributed
+`source="health_platform"`, with body temperature correctly converted to 98.96°F; then ran the
+same deterministic chain as Phase 9's live check
+(`build_patient_state` → `vitals_from_patient_state` → `evaluate_safety`) against this real
+synced data and got `decision: "MODIFY"`, correctly triggering `VITAL_BP_STAGE1_001` (128/82 is
+Stage 1) and `VITAL_SPO2_LOW_001` (91% is in the 90-94% range) — a real `MODIFY` case,
+complementing Phase 9's `ESCALATE` case, using Phase 7's pre-existing rules completely
+unmodified. This directly demonstrates the Phase 10 pass criterion: a real (non-simulated)
+health-platform adapter integrated end-to-end with no change to `clinical_reasoner`/
+`safety_engine` code.
+
+**Not yet verified**: the adapter-swap regression as a standalone automated test (verified here
+by inspection/construction — the safety-engine code path is provably unmodified — rather than a
+dedicated CI-enforced test); Health Connect's `unavailable`/permission-denied path was exercised
+manually during setup (a `ClassCastException` and a cross-drive compiler crash both had to be
+fixed before the real flow could run at all) but doesn't yet have an automated integration test
+the way `test_vitals.py` covers manual entry's failure paths.
+
 ## The assessment endpoint
 
 `POST /assessment` (`app/api/assessment.py`) chains everything above together for the first
@@ -423,5 +517,9 @@ The conversation manager's `emergency_indicators` and `required_measurements` qu
 still unpopulated (see the conversation manager section above) — Phase 7's vital-threshold rules
 and Phase 9's vitals now both exist, but this module hasn't been wired to either yet. Wiring
 safety_engine/medication safety into the *live conversation loop* itself (as opposed to the
-dedicated `/assessment` endpoint) is still separate, undone work. No concrete `DeviceAdapter`
-exists (Phase 9 built the ABC only) — automatic device/health-platform retrieval is Phase 10.
+dedicated `/assessment` endpoint) is still separate, undone work. Health Connect is Android-only
+(Phase 10); Apple HealthKit and other platforms (Fitbit, Withings) remain unimplemented — no
+iOS/Mac environment exists on this machine to build HealthKit against, and no cloud-platform
+developer account was set up for the others. Background/automatic sync (as opposed to the
+explicit "Sync Health Connect data" button) is not built — matches the MVP scope decided for
+this phase, not a gap.

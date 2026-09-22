@@ -96,3 +96,50 @@ async def test_register_and_list_devices(client: AsyncClient) -> None:
 async def test_vitals_require_auth(client: AsyncClient) -> None:
     resp = await client.get("/vitals")
     assert resp.status_code in (401, 403)
+
+
+async def test_sync_vitals_from_health_platform_forces_source_and_reports_per_reading(
+    client: AsyncClient,
+) -> None:
+    headers = await _authed_headers(client, "vitalsF@example.com")
+    device_id = (
+        await client.post("/devices", headers=headers, json={"device_type": "health_connect", "label": "Pixel"})
+    ).json()["id"]
+
+    resp = await client.post(
+        "/vitals/sync",
+        headers=headers,
+        json={
+            "device_id": device_id,
+            "readings": [
+                {"type": "heart_rate", "value": 68, "unit": "bpm", "timestamp": "2026-06-01T00:00:00Z"},
+                {"type": "oxygen_saturation", "value": 85, "unit": "%", "timestamp": "2026-06-01T00:01:00Z"},
+                {"type": "heart_rate", "value": 68, "unit": "beats", "timestamp": "2026-06-01T00:02:00Z"},
+            ],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    assert body["synced"] == 3
+    assert body["accepted"] == 2
+    assert body["rejected"] == 1
+    assert body["results"][2]["accepted"] is False
+
+    snapshot = {v["type"]: v for v in (await client.get("/vitals", headers=headers)).json()}
+    assert snapshot["heart_rate"]["source"] == "health_platform"
+    assert snapshot["oxygen_saturation"]["value"] == 85
+
+
+async def test_sync_vitals_rejects_device_not_owned_by_caller(client: AsyncClient) -> None:
+    headers_a = await _authed_headers(client, "vitalsG@example.com")
+    headers_b = await _authed_headers(client, "vitalsH@example.com")
+    device_id = (
+        await client.post("/devices", headers=headers_a, json={"device_type": "health_connect"})
+    ).json()["id"]
+
+    resp = await client.post(
+        "/vitals/sync",
+        headers=headers_b,
+        json={"device_id": device_id, "readings": [{"type": "heart_rate", "value": 70, "unit": "bpm", "timestamp": "2026-06-01T00:00:00Z"}]},
+    )
+    assert resp.status_code == 404

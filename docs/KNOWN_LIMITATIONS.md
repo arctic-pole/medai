@@ -32,6 +32,15 @@
     (`app/providers/medication_db/openfda_provider.py`)
   - PubMed Central (peer_reviewed_literature) — https://www.ncbi.nlm.nih.gov/books/NBK25501/ —
     approved but **not yet wired in**
+- **Health platform**: **Google Health Connect** (Phase 10). Chosen over Fitbit/Withings (both
+  cloud APIs, backend-testable, but need a developer account + real device/sandbox data this
+  session didn't have) and Apple HealthKit (no environment on this Windows machine to build
+  against). Health Connect has no cloud endpoint at all — it's Android on-device only, readable
+  solely by the app installed on that device — so `app/providers/devices/base.py`'s
+  `DeviceAdapter` couldn't be implemented for it in Python; the real adapter is
+  `mobile/lib/services/health_connect_adapter.dart`, via the `health` package
+  (https://pub.dev/packages/health, v13.3.2). See `docs/AI_PIPELINE.md` for the full account,
+  including the Android SDK/emulator setup this phase required from scratch.
 - **Safety threshold references** (Phase 7, done for vitals; verification method noted per
   source since two of the four pages block automated fetching):
   - AHA heart rate: https://www.heart.org/en/health-topics/high-blood-pressure/the-facts-about-high-blood-pressure/all-about-heart-rate-pulse — page returns HTTP 403 to automated fetch; standard AHA figures (60-100 bpm normal) corroborated via a direct fetch of Cleveland Clinic's heart-rate page and other reputable sources citing the same guideline.
@@ -39,40 +48,49 @@
   - WHO pulse oximetry manual: https://cdn.who.int/media/docs/default-source/patient-safety/pulse-oximetry/who-ps-pulse-oxymetry-training-manual-en.pdf — **direct primary-source fetch succeeded**; exact thresholds quoted in `app/safety/vital_rules.py`.
   - NIH/MedlinePlus body temperature: https://medlineplus.gov/ency/article/001982.htm — **direct fetch succeeded**; exact quote in `app/safety/vital_rules.py`. No dangerous-fever/hypothermia threshold is stated on this page, so none is encoded as a rule.
 
-## Current phase: 9 — Vital Ingestion
+## Current phase: 10 — Health Platform Integration
 
-- **`/vitals` and `/devices` are now live** (`app/api/vitals.py`, `app/api/devices.py`) —
-  manual-entry vital ingestion with the full `vital_system.validation_stages` pipeline
-  (`app/vitals/validation.py`), persisting every submission to `measurements` (audit trail,
-  including rejected ones) and upserting an accepted, non-backdated reading into `vitals` (the
-  current snapshot `PatientState.vitals` reads). `DeviceAdapter` is an ABC only
-  (`app/providers/devices/base.py`) — no concrete adapter exists, so `/devices` registers a
-  record without yet making a device capable of submitting readings automatically.
-- **`POST /assessment`'s safety-engine call now uses real vitals**, not `vitals={}` — a
-  correction to the Phase 8 entry below. Verified live via a two-part check (see
-  `docs/AI_PIPELINE.md` for the full transcript): the vitals API itself against a running dev
-  server (accept/reject/snapshot/history all correct, including a real dangerously-low SpO2 86%
-  reading correctly *accepted*, not rejected); then a script exercising
-  `build_patient_state()` → `vitals_from_patient_state()` → `evaluate_safety()` directly on that
-  same patient, correctly producing `ESCALATE` via `VITAL_SPO2_EMERGENCY_001`. Also covered by
-  new fakes-based integration tests (`test_vitals_safety_integration.py`, and a new
-  `/assessment` test asserting the endpoint's correction pipeline overrides an LLM output that
-  ignores a real escalating vital). **Not yet re-verified with a real live Gemini call** feeding
-  this same real critical vital all the way through to a real model-generated, safety-corrected
-  `Assessment` — blocked on today's exhausted free-tier quota; the fakes-based test covers the
-  same logical path deterministically.
-- **Validation sanity bounds are deliberately generous** (`app/vitals/validation.py`'s
-  `_SANITY_BOUNDS`) — they exist to catch garbage input (wrong unit, impossible values), not to
-  apply clinical judgment, which stays exclusively Phase 7's job. Conflating the two would risk
-  silently discarding exactly the abnormal-but-real readings the safety engine most needs to
-  see; kept deliberately separate and tested
-  (`test_spo2_genuinely_low_is_still_accepted_not_rejected`).
-- **Known gap, unchanged from Phase 8**: the endpoint still never cross-checks its own proposed
-  medications against medication safety (see the Phase 8 entry below) — Phase 9 didn't touch
-  this.
-- **Still open**: the conversation manager's `required_measurements` question tier (see
-  "Standing items" below) — real vitals now exist, but nothing in `app/conversation/` asks for
-  them yet.
+- **`POST /vitals/sync` is now live** (`app/api/vitals.py`) — the real ingestion path for
+  health-platform data, backed by a genuinely new Android environment stood up specifically for
+  this phase (Android SDK, an emulator with Health Connect, Windows Developer Mode for native
+  plugin builds — none of this existed on this machine before). See `docs/AI_PIPELINE.md` for
+  the full walkthrough, including the platform decision and its testability trade-offs.
+- **`DeviceAdapter` (`app/providers/devices/base.py`) still has no Python implementation, and
+  never will for Health Connect specifically** — a real architectural finding, not a shortcut:
+  Health Connect has no cloud endpoint, so a backend-callable `read()` adapter can't reach it at
+  all. The real adapter is client-side (`mobile/lib/services/health_connect_adapter.dart`); the
+  Python ABC remains what a future cloud-platform adapter (Fitbit, Withings) would implement.
+- **Four real bugs found and fixed while wiring this together** (all detailed in
+  `docs/AI_PIPELINE.md`): the `health` plugin needs `FlutterFragmentActivity`, not
+  `FlutterActivity`; Kotlin's incremental compiler crashes across a `C:`/`E:` drive boundary on
+  Windows; Health Connect requires blood pressure as one combined write, not two; and — the most
+  consequential one — mobile's device-bootstrap email domain (`@device.local`) was silently
+  rejected by the backend's email validator the whole time, blocking any real mobile-to-backend
+  call before this phase (fixed to `@example.com`).
+- **Verified live, real device data the whole way through**: seeded real Health Connect records,
+  synced them via the app's real "Sync Health Connect data" button, confirmed `200 OK` with all
+  7 readings accepted, confirmed the exact values (including a correct Celsius→Fahrenheit
+  conversion) in the dev DB, and confirmed the same deterministic safety-engine chain Phase 9
+  proved for manual entry now also produces a correct `MODIFY` decision
+  (`VITAL_BP_STAGE1_001` + `VITAL_SPO2_LOW_001`) for Health Connect-sourced data, using Phase 7's
+  rules completely unmodified — the "clinical engine must not depend on a specific wearable"
+  requirement, demonstrated rather than assumed.
+- **Known gaps, stated plainly**: no automated integration test for the Health Connect
+  unavailable/permission-denied path yet (exercised manually, not in CI); Apple HealthKit,
+  Fitbit, and Withings remain unimplemented (see "Provider/source decisions" above for why);
+  background/automatic sync doesn't exist — only the explicit button — matching this phase's
+  decided MVP scope, not an oversight; the medication cross-check gap from Phase 8 is unchanged.
+
+## Phase 9 — Vital Ingestion (superseded above for the health-platform path)
+
+Manual-entry vital ingestion (`POST /vitals`, `GET /vitals`, `GET /vitals/history`) with the
+full `vital_system.validation_stages` pipeline (`app/vitals/validation.py`), persisting every
+submission to `measurements` (audit trail, including rejected ones) and upserting an accepted,
+non-backdated reading into `vitals`. Validation sanity bounds are deliberately generous — they
+catch garbage input, not clinical severity, which stays exclusively Phase 7's job; a genuinely
+critical real reading (SpO2 86%) is accepted, not rejected, and verified live to correctly drive
+`POST /assessment`'s safety-engine call to `ESCALATE` via `VITAL_SPO2_EMERGENCY_001`. 132/132
+tests as of Phase 9 (more added in Phase 10, now 134/134 backend + 5/5 mobile, see above).
 
 ## Phase 8 — Output Validator, `POST /assessment` wired up (superseded above for vitals)
 
@@ -145,15 +163,18 @@ Reranking is a no-op (plain cosine-similarity order) — no reranker model was s
 
 - Mobile's auth is a **device-bootstrapped placeholder** (no real login/consent screen — Phase
   1 mobile work, still not built). See `mobile/README.md`.
-- Mobile app is scaffolded (Flutter 3.47.5). Android SDK and Xcode are not installed, so **web
-  (Chrome) is the only verified-working target on this machine**. Mobile platform scope
-  (Android-only vs Android+iOS) is still an open decision.
+- Mobile app is scaffolded (Flutter 3.47.5). As of Phase 10, an Android SDK + emulator (API 34)
+  were installed specifically to build and live-verify the Health Connect integration — **Android
+  is now a verified-working target** (real APK built, installed, and run on a real Android
+  runtime), alongside web (Chrome). Xcode/macOS still don't exist on this machine, so iOS remains
+  unverified. Mobile platform scope (Android-only vs Android+iOS) is still an open decision.
 - `POST /messages` conducts a structured interview (Phase 4) working with or without an LLM
   configured. `emergency_indicators`/`required_measurements` question tiers are still
   unpopulated — Phase 7's sourced emergency rules and Phase 9's real vitals both now exist, but
   neither is wired into `app/conversation/` yet, only into `/assessment`. Mobile doesn't call
-  `/symptoms/extract` or `/vitals`, so `high_impact_missing_information` never triggers and no
-  vitals ever exist in the live mobile flow.
+  `/symptoms/extract`, so `high_impact_missing_information` never triggers in the live mobile
+  flow. Mobile *does* now call `/vitals/sync` (Phase 10's "Sync Health Connect data" button), but
+  that's a standalone action, not wired into the conversation loop either.
 - Dev-only CORS (`allow_origins=["*"]`) on the backend — must be locked down before any real
   deployment (Phase 13).
 - A `consents` table was added beyond `medai_spec.yaml`'s explicit `database.tables` list, to

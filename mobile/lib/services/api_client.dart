@@ -1,5 +1,7 @@
 import 'dart:convert';
+import 'dart:io' show Platform;
 
+import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:http/http.dart' as http;
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:uuid/uuid.dart';
@@ -16,7 +18,8 @@ class ApiClient {
 
   // Android emulators reach the host machine at 10.0.2.2, not localhost. Web/desktop use
   // localhost directly. Override via ApiClient(baseUrl: ...) for a real device/deployment.
-  static const _defaultBaseUrl = 'http://localhost:8000';
+  static String get _defaultBaseUrl =>
+      !kIsWeb && Platform.isAndroid ? 'http://10.0.2.2:8000' : 'http://localhost:8000';
 
   final String baseUrl;
   final _storage = const FlutterSecureStorage();
@@ -35,7 +38,10 @@ class ApiClient {
     final password = const Uuid().v4();
 
     if (email == null) {
-      email = 'device-${const Uuid().v4()}@device.local';
+      // example.com is IANA-reserved for documentation/testing use, unlike .local (a reserved
+      // mDNS TLD the backend's EmailStr validator rejects outright, found live on Android:
+      // "The part after the @-sign is a special-use or reserved name").
+      email = 'device-${const Uuid().v4()}@example.com';
       await _storage.write(key: _deviceEmailKey, value: email);
     }
 
@@ -80,6 +86,45 @@ class ApiClient {
     }
     final body = jsonDecode(response.body) as Map<String, dynamic>;
     return (body['assistant_message'] as Map<String, dynamic>)['content'] as String;
+  }
+
+  /// Registers a device (see backend/app/api/devices.py) and returns its id. Used by
+  /// HealthSyncService to get a device_id to sync Health Connect readings under.
+  Future<String> registerDevice({required String deviceType, String? label}) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/devices'),
+      headers: await _authHeaders(),
+      body: jsonEncode({'device_type': deviceType, if (label != null) 'label': label}),
+    );
+    if (response.statusCode != 201) {
+      throw ApiException('failed to register device: ${response.statusCode} ${response.body}');
+    }
+    return (jsonDecode(response.body) as Map<String, dynamic>)['id'] as String;
+  }
+
+  Future<List<Map<String, dynamic>>> listDevices() async {
+    final response = await http.get(Uri.parse('$baseUrl/devices'), headers: await _authHeaders());
+    if (response.statusCode != 200) {
+      throw ApiException('failed to list devices: ${response.statusCode} ${response.body}');
+    }
+    return (jsonDecode(response.body) as List).cast<Map<String, dynamic>>();
+  }
+
+  /// Sends a batch of already-normalized readings to POST /vitals/sync
+  /// (backend/app/api/vitals.py) and returns the per-reading accept/reject outcome.
+  Future<Map<String, dynamic>> syncVitals({
+    required String deviceId,
+    required List<Map<String, dynamic>> readings,
+  }) async {
+    final response = await http.post(
+      Uri.parse('$baseUrl/vitals/sync'),
+      headers: await _authHeaders(),
+      body: jsonEncode({'device_id': deviceId, 'readings': readings}),
+    );
+    if (response.statusCode != 200) {
+      throw ApiException('failed to sync vitals: ${response.statusCode} ${response.body}');
+    }
+    return jsonDecode(response.body) as Map<String, dynamic>;
   }
 }
 
