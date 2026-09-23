@@ -35,7 +35,12 @@ deployment from silently using — the app now refuses to start with either one 
 `environment=="development"`), automated secret-scanning runs in CI, roughly a dozen
 previously-unbounded input fields were bounded (including an unauthenticated login-password
 DoS vector), a dedicated prompt-injection adversarial test suite was added, and
-`GET /privacy/export` / `DELETE /privacy/me` were built and verified live against real data.
+`GET /privacy/export` / `DELETE /privacy/me` were built and verified live against real data. As
+of Phase 14 (evaluation), a sourced 7-case evaluation dataset (`backend/evaluation/dataset.py`)
+covers every spec-defined case type with zero-tolerance safety gates (every known-emergency and
+known-contraindication case is correctly detected); a real-Gemini generation-quality companion
+script exists and was run live, but hit the same free-tier quota wall documented below before
+producing results — see `docs/EVALUATION.md`.
 **Verified live**: the automatic assessment pipeline (0.3s, register → fill profile/history/
 allergies/medications → message); real Health Connect data synced end-to-end on a real Android
 emulator (Phase 10); a real `/assessment/speech` call returning genuine WAV audio (Phase 11); the
@@ -45,9 +50,11 @@ immediately stops working). Known gaps: medication proposals aren't cross-checke
 medication safety; 13 of 15 `ux.screens` remain unbuilt on mobile (their backend APIs already
 exist); only 1 of 5 confirmation-prompt triggers has real signal to act on; numeric vital values
 aren't encrypted at rest (unlike every other sensitive column); no rate limiting on login
-attempts; no real deployment target exists to configure TLS against. Phases 0–13 (Foundation
-through Security Hardening) are all done — see `docs/KNOWN_LIMITATIONS.md` and
-`docs/SECURITY.md` for the up-to-date, full-detail status.
+attempts; no real deployment target exists to configure TLS against; real generation-quality
+metrics (`evidence_grounded_response_rate`, `unsupported_claim_rate`, `schema_compliance`) are
+not yet measured against live Gemini output. Phases 0–14 (Foundation through Evaluation) are all
+done — see `docs/KNOWN_LIMITATIONS.md`, `docs/SECURITY.md`, and `docs/EVALUATION.md` for the
+up-to-date, full-detail status.
 
 LLM provider is Gemini (`GEMINI_API_KEY` in `.env`), verified live across most phases. Its free
 tier is rate-limited in a way that's turned out less predictable than first assumed: four model
@@ -100,5 +107,5 @@ flutter run -d chrome    # or an Android emulator/device: flutter run -d <device
 
 ## Documentation
 
-See `docs/` for architecture, API, database, AI pipeline, safety, security, testing, deployment,
-and known-limitations docs (filled in incrementally as each phase lands).
+See `docs/` for architecture, API, database, AI pipeline, safety, security, evaluation, testing,
+deployment, and known-limitations docs (filled in incrementally as each phase lands).
