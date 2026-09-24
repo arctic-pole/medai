@@ -57,25 +57,27 @@
 
 Full dataset/methodology detail lives in `docs/EVALUATION.md` (new this phase). Summary:
 
-- **`backend/evaluation/dataset.py`**: 7 cases, one per `evaluation_dataset.schema.case_types`
-  value, every non-trivial `expected_safety_state` traceable to an already-cited real source
-  (AHA/WHO from `app/safety/vital_rules.py`, openFDA from `app/safety/medication.py`) — never a
-  model guess, per the spec's own explicit rule. `backend/tests/integration/
-  test_evaluation_dataset.py` (11 tests) runs every case through the real deterministic pipeline
-  pieces (patient-state assembly, safety engine, medication safety — never fakes standing in for
-  these specific pieces).
+- **`backend/evaluation/dataset.py`**: 14 cases, two per `evaluation_dataset.schema.case_types`
+  value (expanded same-phase from one each), every non-trivial `expected_safety_state`
+  traceable to an already-cited real source (AHA/WHO from `app/safety/vital_rules.py`, openFDA
+  from `app/safety/medication.py`) — never a model guess, per the spec's own explicit rule. The
+  second case of each type exercises a different real rule/scenario (bradycardia vs.
+  tachycardia, hypertensive crisis vs. SpO2 emergency, a second contraindicated substance) so
+  it isn't duplicate coverage. `backend/tests/integration/test_evaluation_dataset.py` (21 tests)
+  runs every case through the real deterministic pipeline pieces (patient-state assembly, safety
+  engine, medication safety — never fakes standing in for these specific pieces).
 - **Safety metrics — real numbers, zero-tolerance gates only** (the open numeric-threshold
   decision the plan flagged; user's explicit choice this phase: "report actual numbers, gate
   only on zero-tolerance items," not an invented percentage):
-  - `emergency_detection_sensitivity`: **1.0 (1/1)** — the one `ESCALATE`-expected case was
-    detected.
-  - `contraindication_detection`: **1.0 (1/1)** — the one `BLOCK`-expected case was detected.
-  - `unsafe_recommendation_rate`: **0/7** — every case individually gated
+  - `emergency_detection_sensitivity`: **1.0 (2/2)** — both `ESCALATE`-expected cases detected.
+  - `contraindication_detection`: **1.0 (2/2)** — both `BLOCK`-expected cases detected.
+  - `unsafe_recommendation_rate`: **0/14** — every case individually gated
     at-least-as-restrictive-as-expected (`test_case_matches_expected_safety_state`).
-  - A dataset of 7 hand-built cases is too small for these ratios to mean much as *general*
-    sensitivity/specificity claims — they document that this specific, sourced dataset passes
-    with zero misses, not a clinically-validated accuracy figure. A larger dataset with a
-    clinically-set graded threshold is future work, not invented here.
+  - A dataset of 14 hand-built cases is still too small for these ratios to mean much as
+    *general* sensitivity/specificity claims — they document that this specific, sourced
+    dataset passes with zero misses across two independent rules per gate, not a
+    clinically-validated accuracy figure. A larger dataset with a clinically-set graded
+    threshold is future work, not invented here.
 - **`backend/tests/unit/test_safety_adversarial_suite.py`** (7 tests): maps all 10
   `testing.safety_adversarial` categories to either existing coverage elsewhere or new tests
   here — contradictory vitals kept (not silently resolved), contradictory assessment output
@@ -85,28 +87,30 @@ Full dataset/methodology detail lives in `docs/EVALUATION.md` (new this phase). 
 - **`backend/tests/integration/test_e2e_conversation.py`** (1 test): a single, complete,
   real-HTTP conversation from a fresh patient's first message through every real follow-up
   question to a final validated `Assessment`, covering `testing.end_to_end`.
-- **Real-Gemini generation-quality metrics: attempted, not obtained** (user's explicit choice
-  this phase: "attempt real Gemini calls too," accepting the session's well-documented quota
-  risk). `backend/evaluation/live_generation_check.py` drives all 7 dataset cases through the
-  real `POST /messages` endpoint end-to-end with no provider overrides (real Gemini, real local
-  embeddings). Run live against the dev DB: hit the same free-tier wall documented since Phase
-  8 (20 requests/day, shared across model ids) after only a few cases — **0 of 7 cases produced
-  a real generated `Assessment`; `generation_metrics` (`evidence_grounded_response_rate`,
-  `unsupported_claim_rate`, `schema_compliance`) could not be measured live this session.**
-  A real, separate bug was found and fixed in the process: 4 of the 7 dataset cases
-  (`normal-001`, `contradictory-001`, `emergency-001`, `medication_conflict-001`) had an empty
+- **Real-Gemini generation-quality metrics: attempted live, real results obtained** (user's
+  explicit choice this phase: "attempt real Gemini calls too," accepting the session's
+  well-documented quota risk). `backend/evaluation/live_generation_check.py` drives dataset
+  cases through the real `POST /messages` endpoint end-to-end with no provider overrides (real
+  Gemini, real local embeddings). First attempt hit the same free-tier wall documented since
+  Phase 8 (20 requests/day, shared across model ids) before a single case reached generation —
+  while diagnosing that, found and fixed a real bug (4 dataset cases had an empty
   `medications=[]` with no matching `current_medications` entry in
-  `expected_information_requirements` — internally inconsistent, since an empty list and "not
-  yet answered" look identical to the conversation manager. Live, this made the manager
-  correctly, endlessly re-ask the same medications question, burning through the day's quota on
-  question-phrasing calls before a single case reached real assessment generation. Fixed by
-  populating `medications=[{"name": "none"}]` on all 4 (matching a fix already applied to
-  `ambiguous-001` earlier this phase for the identical root cause), and hardened
-  `live_generation_check.py` to bail out of a case after two identical repeated questions rather
-  than retrying blindly. The script itself is otherwise complete and ready to produce real
-  numbers on a future run once the daily quota resets or a paid tier is used — see
-  `docs/EVALUATION.md`.
-- **209/209 backend tests** (19 new: 7 safety-adversarial, 1 end-to-end, 11 evaluation-dataset).
+  `expected_information_requirements`, so the manager correctly, endlessly re-asked the same
+  question and burned the quota on it; fixed the dataset and hardened the script to bail out
+  after a repeated question). **Second attempt (next day, quota reset), run to completion
+  against the original 7-case dataset**: 5 of 7 cases reached `is_assessment: true`, 2 correctly
+  got a follow-up question instead (their dataset entries intentionally leave required fields
+  unanswered), 0 errored — but **all 5 generated cases resolved to `SAFE_FALLBACK`**
+  (`schema_compliance_rate: 0.0`), the tiny daily quota exhausting mid-correction-retry on every
+  one. One case (`normal-001`) visibly triggered a real validation catch first
+  (`check_uncertainty_requirements`: high confidence claimed with no supporting evidence)
+  before the retry itself hit the rate limit. **The positive finding**: fail-closed behavior
+  held correctly on every attempt — no ungrounded or falsely-confident output was ever
+  released, live, under real quota pressure. Real, non-fallback `evidence_grounded_response_rate`
+  /`unsupported_claim_rate` numbers still don't exist — see `docs/EVALUATION.md` and
+  `backend/evaluation/results.json` for the full account and raw data.
+- **219/219 backend tests** (29 new over Phase 13: 7 safety-adversarial, 1 end-to-end, 21
+  evaluation-dataset).
 
 ## Phase 13 — Security Hardening (superseded above for evaluation)
 
